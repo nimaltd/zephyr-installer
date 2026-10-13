@@ -1,0 +1,46 @@
+[build-system]
+# 77 is the first that reads license = "Apache-2.0" as text. 76 refuses it.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zephyr-installer"
+# Read from zephyr_installer.__version__, so the version lives in exactly one
+# place and cannot drift between the package and its metadata.
+dynamic = ["version"]
+description = "Install embedded C libraries into a Zephyr application, as Zephyr modules"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Nima Askari (NimaLTD)", email = "nima.askari@gmail.com" }]
+keywords = ["zephyr", "zephyr-rtos", "nrf-connect-sdk", "embedded", "installer", "kconfig", "nimaltd"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Embedded Systems",
+]
+
+# None. PyYAML is used when it happens to be installed, and a reader built
+# into the package handles installer.yml otherwise. Requiring it would make
+# pip go online for it, which is exactly what an offline install cannot do.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/nimaltd/zephyr-installer"
+Issues = "https://github.com/nimaltd/zephyr-installer/issues"
+
+[project.scripts]
+zephyr-installer = "zephyr_installer.cli:main"
+
+# The package is the src folder itself, with no folder of its name inside. The
+# core is a git submodule, the whole core-installer repository, and its own
+# tests are no part of the installer, so they are not listed.
+[tool.setuptools]
+package-dir = { "zephyr_installer" = "src" }
+packages = ["zephyr_installer", "zephyr_installer.core"]
+
+[tool.setuptools.dynamic]
+version = { attr = "zephyr_installer.__version__" }

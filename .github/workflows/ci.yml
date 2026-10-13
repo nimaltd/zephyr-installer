@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests on Python ${{ matrix.python }}, ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.8", "3.12"]
+
+    steps:
+      # With the shared core, a git submodule. Without it nothing imports.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: python -m pip install --upgrade pip pytest PyYAML
+
+      # Windows is in the matrix on purpose: its CRLF files and its paths are
+      # what break first in a prj.conf or a CMakeLists.txt.
+      - name: Test
+        run: python test/run_tests.py
+
+  build:
+    name: Build the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+
+      - name: Check
+        run: python -m twine check dist/*
+
+      # What was built, installed the way a user gets it and then started, from
+      # outside the checkout so the source tree cannot stand in for it.
+      # --no-index because it has to need nothing else.
+      - name: Run what was built
+        working-directory: ${{ runner.temp }}
+        run: |
+          wheel="$(ls "$GITHUB_WORKSPACE"/dist/*.whl)"
+          python -m venv fresh
+          fresh/bin/python -m pip install --no-index "$wheel"
+          expected="zephyr-installer $(basename "$wheel" | cut -d- -f2)"
+          for got in "$(fresh/bin/zephyr-installer --version)" "$(fresh/bin/python -m zephyr_installer --version)"; do
+            echo "$got"
+            test "$got" = "$expected"
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  zephyr:
+    name: A real Zephyr build, run on native_sim
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      ZP: ${{ github.workspace }}/../zp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # native_sim is built with the runner's own gcc and runs on the runner,
+      # so this needs no Zephyr SDK and none of Zephyr's modules.
+      - name: Zephyr's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build device-tree-compiler gperf
+          python -m pip install west
+
+      - name: Zephyr, without its modules
+        run: |
+          git clone --depth 1 --branch v4.3.0 https://github.com/zephyrproject-rtos/zephyr.git "$ZP/zephyr"
+          cd "$ZP"
+          west init -l zephyr
+          west config manifest.project-filter -- '-.*'
+          python -m pip install -r zephyr/scripts/requirements-base.txt
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      # The wheel just built, into the test application, the way a user does
+      # it: from the application's folder, with nobody to answer.
+      - name: Install the demo library
+        run: |
+          python -m pip install --no-index dist/*.whl
+          cp -r test/e2e/app "$ZP/app"
+          cd "$ZP/app"
+          zephyr-installer "$GITHUB_WORKSPACE/test/e2e/demo" < /dev/null
+          cat CMakeLists.txt prj.conf modules/demo/zephyr/CMakeLists.txt modules/demo/zephyr/Kconfig
+
+      # 52 is the library's answer with the value prj.conf sets, 50, not its
+      # default of 40, so this also shows the user's setting won.
+      - name: Build it and run it
+        working-directory: ${{ env.ZP }}
+        run: |
+          west build -b native_sim/native/64 -d build app
+          build/zephyr/zephyr.exe --stop_at=1 | tee run.txt
+          grep -q "demo says 52" run.txt

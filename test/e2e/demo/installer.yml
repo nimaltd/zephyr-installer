@@ -1,0 +1,35 @@
+# A library made only to be installed by the tests, into a real Zephyr build.
+
+name: demo
+description: The answer, from a library zephyr-installer put in
+repository: https://github.com/nimaltd/zephyr-installer
+
+requires:
+  zephyr_installer: 1.0.0
+  kconfig:
+    - PRINTK
+    - MAIN_STACK_SIZE=2048
+
+install:
+  layout: mirror
+  defines:
+    - DEMO_DEFINED=1
+
+zephyr:
+  settings:
+    - name: DEMO_BASE
+      type: int
+      default: 40
+      range: [0, 100]
+      prompt: Number the answer starts from
+      help: The answer is this plus 2.
+    - name: DEMO_NAME
+      type: string
+      default: demo
+      prompt: Name the answer is printed with
+
+files:
+  headers:
+    - src/demo.h
+  sources:
+    - src/demo.c
