@@ -124,6 +124,10 @@ jobs:
       # default of 40, so this also shows the user's setting won.
       - name: Build it and run it
         working-directory: ${{ env.ZP }}
+        # Said outright: Zephyr looks for its SDK before it sees the board is
+        # native_sim, and there is no SDK here to find.
+        env:
+          ZEPHYR_TOOLCHAIN_VARIANT: host
         run: |
           west build -b native_sim/native/64 -d build app
           build/zephyr/zephyr.exe --stop_at=1 | tee run.txt
