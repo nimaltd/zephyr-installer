@@ -169,3 +169,19 @@ def test_what_stm32_installer_needs_is_not_this_ones_business(library):
     loaded = _load(library, requires={"installer": "99.0.0", "hal_modules": ["spi"], "rtos": "freertos"})
 
     assert loaded.requires.is_empty()
+
+
+def test_cmake_lines_are_read_one_per_line(library):
+    loaded = _load(library, zephyr={"cmake": ["zephyr_library_compile_options(-O2)", "  ", " a(b) "]})
+
+    assert loaded.zephyr.cmake == ["zephyr_library_compile_options(-O2)", "a(b)"]
+
+
+@pytest.mark.parametrize("cmake, words", [
+    ("zephyr_library_compile_options(-O2)", "list of lines"),
+    ([3], "list of lines"),
+    (["a()\nb()"], "runs onto another"),
+])
+def test_cmake_lines_written_wrong_are_refused(library, cmake, words):
+    with pytest.raises(ManifestError, match=words):
+        _load(library, zephyr={"cmake": cmake})

@@ -19,6 +19,8 @@ otherwise take the place of Zephyr's own littlefs.
 import re
 from pathlib import Path
 
+from .core import usercode
+from .core.files import backup
 from .core.target import ALREADY, CHANGED, MANUAL, Outcome
 
 NAME = "Zephyr module"
@@ -52,6 +54,11 @@ def _in_module(relative):
         return '"${ZEPHYR_CURRENT_MODULE_DIR}"'
 
     return '"${ZEPHYR_CURRENT_MODULE_DIR}/' + cmake_quote(relative)[1:]
+
+
+def section(library):
+    """The name of the USER CODE section in the module's CMakeLists.txt: EXAMPLE_CMAKE."""
+    return f"{library.zephyr.symbol}_CMAKE"
 
 
 def _label(library):
@@ -109,7 +116,24 @@ def cmakelists(library):
         lines.extend(f"    {define}" for define in library.defines)
         lines.append("  )")
 
-    lines.append("endif()")
+    if library.zephyr.cmake:
+        lines.append("")
+        lines.append(f"  # From {library.name}'s installer.yml.")
+        lines.extend(f"  {line}" for line in library.zephyr.cmake)
+
+    # The user's own lines, which every install carries over. Empty to start
+    # with, so anything in it on an uninstall is the user's. A library of
+    # headers only has no library of its own to give settings to.
+    example = "zephyr_library_compile_definitions()" if library.build_sources else "zephyr_compile_definitions()"
+    lines += [
+        "",
+        f"  # Lines of your own for {library.name}, such as",
+        f"  # {example}, go between these two, and every",
+        "  # install keeps them.",
+        f"  # USER CODE BEGIN {section(library)}",
+        f"  # USER CODE END {section(library)}",
+        "endif()",
+    ]
 
     return "\n".join(lines) + "\n"
 
@@ -192,24 +216,103 @@ def write(library, destination):
         "Kconfig": kconfig(library),
     }
     written = []
+    steps = []
+    saved = None
 
     try:
         folder.mkdir(parents=True, exist_ok=True)
 
         for name, text in wanted.items():
             path = folder / name
+            data = text.encode("utf-8")
+            old = path.read_bytes() if path.is_file() else None
+
+            # What the user wrote between the USER CODE lines of the last copy
+            # goes into the new one. Markers that no longer pair leave nothing
+            # to carry, so the copy is put aside first, whole.
+            if old is not None and name == "CMakeLists.txt":
+                merged = usercode.merge(data, old)
+
+                if merged.broken or merged.lost:
+                    saved = backup(path)
+                    steps.append(f"Your lines in zephyr/{name} could not be carried over: they are in {saved.name}.")
+                else:
+                    data = merged.data
+
+                if merged.kept:
+                    steps.append(f"Kept your USER CODE {', '.join(merged.kept)} in zephyr/{name}.")
 
             # Left alone when nothing changed, so the build does not see a
             # newer file and configure again for nothing.
-            if path.is_file() and path.read_bytes() == text.encode("utf-8"):
+            if old == data:
                 continue
 
-            path.write_bytes(text.encode("utf-8"))
+            path.write_bytes(data)
             written.append(name)
     except OSError as error:
         return Outcome(NAME, MANUAL, f"Could not write {folder}: {error}")
 
     if not written:
-        return Outcome(NAME, ALREADY, f"{module_name(library)} is up to date.")
+        return Outcome(NAME, ALREADY, f"{module_name(library)} is up to date.", steps)
 
-    return Outcome(NAME, CHANGED, f"Wrote {module_name(library)}: zephyr/{', zephyr/'.join(written)}.")
+    return Outcome(NAME, CHANGED, f"Wrote {module_name(library)}: zephyr/{', zephyr/'.join(written)}.",
+                   steps, saved)
+
+
+def _holds_yours(path):
+    """Whether a CMakeLists.txt write() made has anything between its USER CODE lines."""
+    try:
+        lines, sections = usercode.parse(path.read_bytes())
+    except usercode.MarkerError:
+        return True
+
+    return any(b"".join(lines[first:last]).strip() for first, last in sections.values())
+
+
+def remove(destination):
+    """
+    Delete the three files write() made, and the zephyr folder when they were
+    all it held. A library's own module is not touched.
+
+    Returns the copy put aside of a CMakeLists.txt that had the user's lines
+    in it, or None.
+    """
+    folder = Path(destination) / "zephyr"
+    saved = None
+
+    for name in ("module.yml", "CMakeLists.txt", "Kconfig"):
+        path = folder / name
+
+        try:
+            if not (path.is_file() and path.read_text(encoding="utf-8").startswith(MARK)):
+                continue
+
+            if name == "CMakeLists.txt" and _holds_yours(path):
+                saved = backup(path)
+
+            path.unlink()
+        except (OSError, UnicodeDecodeError):
+            continue
+
+    try:
+        folder.rmdir()
+    except OSError:
+        pass
+
+    return saved
+
+
+# A symbol the Kconfig defines: config NAME, or menuconfig NAME.
+_DEFINED = re.compile(r"^(?:menu)?config[ \t]+([A-Za-z0-9_]+)", re.MULTILINE)
+
+
+def symbols(destination):
+    """Every symbol the Kconfig write() made defines, read before it is removed."""
+    path = Path(destination) / "zephyr" / "Kconfig"
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    return _DEFINED.findall(text) if text.startswith(MARK) else []

@@ -14,7 +14,7 @@ from pathlib import Path
 from . import app, module
 from .core import console
 from .core.manifest import ManifestError
-from .core.target import INFO, OK, WARN, Finding, Target
+from .core.target import CHANGED, INFO, MANUAL, OK, WARN, Finding, Outcome, Target
 
 # A Kconfig symbol as Zephyr writes them, without CONFIG_ in front.
 SYMBOL = re.compile(r"^[A-Z0-9_]+$")
@@ -215,6 +215,19 @@ class ZephyrPart:
         if twice:
             raise ManifestError(f"zephyr.settings has {', '.join(twice)} more than once.")
 
+        # Lines of CMake the library needs beyond its files, written as they
+        # stand into its module's CMakeLists.txt. They run when the user
+        # configures the build, as a library's own module.yml would.
+        cmake = data.get("cmake") or []
+
+        if not isinstance(cmake, list) or not all(isinstance(line, str) for line in cmake):
+            raise ManifestError("zephyr.cmake is a list of lines of CMake, each in quotes when it holds a colon.")
+
+        if any("\n" in line or "\r" in line for line in cmake):
+            raise ManifestError("zephyr.cmake has a line that runs onto another. Give each line on its own.")
+
+        self.cmake = [line.strip() for line in cmake if line.strip()]
+
 
 class Zephyr(Target):
     """A Zephyr application: CMakeLists.txt with find_package(Zephyr), and prj.conf."""
@@ -333,20 +346,30 @@ class Zephyr(Target):
         assigned = app.assigned(project_root, library.name, conf)
         ours = app.in_block(project_root, library.name, conf)
 
-        for requirement in library.requires.kconfig:
-            have = assigned.get(requirement.symbol)
+        for symbol, value, line in app.wanted(library):
+            have = assigned.get(symbol)
 
-            if have is None and ours.get(requirement.symbol) == requirement.value:
-                findings.append(Finding(OK, f"{requirement.line} is in {conf}"))
+            # The library's own switch is no requirement, and is only worth a
+            # line when the user has set it already.
+            if symbol == library.zephyr.symbol and have is None:
+                continue
+
+            if have is None and ours.get(symbol) == value:
+                findings.append(Finding(OK, f"{line} is in {conf}"))
             elif have is None:
-                findings.append(Finding(INFO, f"{requirement.line} goes into {conf}"))
-            elif have[0] == requirement.value:
-                findings.append(Finding(OK, f"{requirement.line} is in {have[1]}"))
+                findings.append(Finding(INFO, f"{line} goes into {conf}"))
+            elif have[0] == value:
+                # The same, so nothing is wrong, but the block will not set it,
+                # and the user should know which line does.
+                findings.append(Finding(
+                    WARN, f"{have[1]} already sets {line}, so the block has it commented out",
+                    "Your line is the one used. Nothing to do.",
+                ))
             else:
                 findings.append(Finding(
-                    WARN, f"{have[1]} sets CONFIG_{requirement.symbol}={have[0]}, and "
-                    f"{library.name} needs {requirement.value}",
-                    "Your line is kept. Change it if the library is to work.",
+                    WARN, f"{have[1]} sets CONFIG_{symbol}={have[0]}, and {library.name} needs {value}. "
+                    "The block has it commented out",
+                    "Your line is the one used. Change it if the library is to work.",
                 ))
 
         for peripheral in library.requires.peripherals:
@@ -369,5 +392,36 @@ class Zephyr(Target):
         outcomes = [module.write(library, destination)]
         outcomes.extend(app.integrate(project_root, library, destination,
                                       self.conf_for(library, project_root)))
+
+        return outcomes
+
+    def uninstall(self, project_root, library):
+        """
+        Take the library out of the application's CMakeLists.txt and Kconfig
+        file, and delete the module files this wrote into its folder.
+        """
+        defined = module.symbols(library.destination) if library.destination is not None else []
+        outcomes = app.uninstall(project_root, library.name)
+
+        if library.destination is not None:
+            saved = module.remove(library.destination)
+
+            if saved is not None:
+                outcomes.append(Outcome(
+                    module.NAME, CHANGED,
+                    f"Your lines in zephyr/CMakeLists.txt are saved, in zephyr/{saved.name}.",
+                    backup=saved,
+                ))
+
+        # A setting the user set below the block names a symbol that is gone
+        # now, and Zephyr stops on a symbol it does not know. The line is the
+        # user's, so it is named rather than taken out.
+        for conf, lines in app.leftover(project_root, defined).items():
+            outcomes.append(Outcome(
+                conf, MANUAL,
+                f"{conf} still sets what came with {library.name}, and Zephyr stops on a symbol it "
+                "does not know. Take these lines out:",
+                lines,
+            ))
 
         return outcomes

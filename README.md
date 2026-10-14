@@ -34,6 +34,16 @@ To update it later, `pip install --upgrade zephyr-installer`. To remove it, `pip
 
 On Windows, if `zephyr-installer` is not found after installing, pip put it in a folder that is not on your PATH. `python -m zephyr_installer owner/example` runs the same thing.
 
+### Try it first
+
+There is a library made for trying the installer on, [zephyr-installer-example](https://github.com/nimaltd/zephyr-installer-example). It builds in any Zephyr application, `native_sim` included, with its settings in Kconfig. Its README walks through an install, an update that keeps a setting you changed, an option, and an uninstall. From your application's folder:
+
+```bash
+zephyr-installer nimaltd/zephyr-installer-example
+```
+
+Its `installer.yml` has every key with a comment, so it is also a starting point for making your own library installable.
+
 ### What happens
 
 Take `example`, installed into an application called `app`:
@@ -55,7 +65,6 @@ The block in your `CMakeLists.txt` adds the library's folder to `ZEPHYR_EXTRA_MO
 
 ```cmake
 cmake_minimum_required(VERSION 3.20.0)
-
 # >>> zephyr-installer: example >>>
 # Added by zephyr-installer. Delete this block, and example's block in
 # the Kconfig file, to drop the library from the build.
@@ -78,7 +87,22 @@ CONFIG_EXAMPLE=y
 # <<< zephyr-installer: example <<<
 ```
 
-A symbol you already set yourself is not set again in the block, whatever value you gave it. `CONFIG_I2C=n` of yours stays `n`, and the installer says so before it writes anything, rather than quietly undoing your choice with a later line.
+A symbol you already set yourself, on or off, is not set again: in Kconfig the line read last wins, and it would quietly undo your choice. It is still written in the block, commented out, with the line that set it, so the block shows everything the library asked for:
+
+```
+CONFIG_EXAMPLE=y
+# CONFIG_I2C=y  (left out: prj.conf sets CONFIG_I2C=n)
+```
+
+And the installer warns about each one before it writes anything:
+
+```
+Requirements
+  check   prj.conf sets CONFIG_I2C=n, and example needs y. The block has it commented out
+          Your line is the one used. Change it if the library is to work.
+```
+
+Change your line, or delete it and install again, and the block sets it.
 
 Both files are copied aside before they change, as `CMakeLists.txt.20261013-170013.bak` and the like, and the files keep their own line endings. Installing twice changes nothing the second time.
 
@@ -163,6 +187,8 @@ A bare name with no owner, like `example`, is a NimaLTD library, `nimaltd/exampl
 | `--dir libs/example` | The folder of your application to install into, for one library. Asked for when not given, with `modules/<name>` as the answer if you just press Enter, or the folder it is already in |
 | `--project D:/work/app` | Your application's folder, when you are not running from it |
 | `--ref v2.0.0` | A tag, a branch or a commit to take from GitHub. When not given, `main`, or `master` for a repository that has no `main` |
+| `--key github_pat_...` | A GitHub token, for a library in a private repository. See [A private repository](#a-private-repository) |
+| `--uninstall example` | Take the library out of the application. See [Uninstalling a library](#uninstalling-a-library) |
 | `--with littlefs` | Take this part of the library without being asked. Give it once for each part |
 | `--without littlefs` | Leave this part out, or take it out of a library already installed |
 | `--version` | Show which version of the installer you have, and do nothing else |
@@ -174,6 +200,25 @@ Run the same command again. Every file of the library is replaced, so an update 
 What you wrote between `USER CODE BEGIN` and `USER CODE END` in a library's file is kept. Outside those lines, the next install replaces it, and when that would lose something of yours the file is saved beside it first, as a `.bak`.
 
 The record of what is installed, and where, is `.zephyr-installer.json` in your application's folder. Keep it in version control with the rest.
+
+### Uninstalling a library
+
+```bash
+zephyr-installer --uninstall example
+```
+
+From your application's folder, or with `--project`. Its block goes from `CMakeLists.txt` and from the Kconfig file that has it, the module files the installer wrote go from its folder, and then the library's own files. Installed and then uninstalled, `CMakeLists.txt` and `prj.conf` are back to the byte they were.
+
+What was yours is saved before it goes, as a `.bak` beside it: any file of the library you wrote in between its `USER CODE` lines or changed by hand. A file you put in the library's folder yourself is left where it is, and the folder with it.
+
+A setting you set yourself, below the installer's block, is your line, and it stays. The symbol it sets went with the library, though, and Zephyr stops on a symbol it does not know, so the installer names every such line:
+
+```
+  manual  prj.conf  prj.conf still sets what came with example, and Zephyr stops on a symbol it does not know. Take these lines out:
+          CONFIG_EXAMPLE_POLL_CHUNK=64
+```
+
+A library another one needs stays, and the installer says which needs it. Name them all, in any order, and each goes after what needs it: `zephyr-installer --uninstall osal ee24`. When the library you took out brought another with it that nothing left needs, the last line names it, with the command that takes it out too. Uninstall works from `.zephyr-installer.json`, the record of what was installed and where.
 
 ### A library that needs another
 
@@ -188,7 +233,60 @@ pip install zephyr_installer-1.0.0-py3-none-any.whl
 zephyr-installer D:/Downloads/example-main.zip
 ```
 
-If the library needs another, give that zip on the same line. A private repository installs by name with a GitHub token that can read it in `GITHUB_TOKEN`, and a proxy is taken from `HTTPS_PROXY`.
+If the library needs another, give that zip on the same line. Behind a proxy, set `HTTPS_PROXY` to its address.
+
+### A private repository
+
+A library in a private repository installs the same way, given a GitHub token that can read it. Make one once:
+
+1. Open [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens) and click **Generate new token**.
+2. Give it a name and an expiry. Under **Resource owner**, pick the account or the organisation that owns the repository.
+3. Under **Repository access**, choose **Only select repositories** and pick the library's repository.
+4. Under **Permissions**, set **Contents** to **Read-only**:
+   - Older layout: open **Repository permissions** and change **Contents** from **No access** to **Read-only**.
+   - Newer layout: click **+ Add permissions**, tick **Contents**, then set its access to **Read-only**.
+
+   **Metadata** comes with it by itself. Contents is the one that matters: without it the token can see the repository but not read a file of it.
+5. Click **Generate token**, and copy it. GitHub shows it only once.
+
+Then give it with `--key`:
+
+```bash
+zephyr-installer owner/example --key github_pat_...
+```
+
+Or put it in `GITHUB_TOKEN` once, and install by name as usual. That keeps it out of your shell's history, where `--key` leaves it:
+
+**Windows, PowerShell:**
+
+```powershell
+$env:GITHUB_TOKEN = "github_pat_..."
+zephyr-installer owner/example
+```
+
+**Windows, Command Prompt:**
+
+```bat
+set GITHUB_TOKEN=github_pat_...
+zephyr-installer owner/example
+```
+
+**Linux and macOS:**
+
+```bash
+export GITHUB_TOKEN=github_pat_...
+zephyr-installer owner/example
+```
+
+`--key` comes first when both are there. `GH_TOKEN` works as well, and if you use the `gh` command, `gh auth token` prints the token you are signed in with. Whichever way it comes, the token is sent to GitHub and nowhere else.
+
+When the token cannot read the library, the installer says which of these it is:
+
+- **It can see the repository, but cannot read its files.** The token has no Contents permission, only Metadata. Edit the token, and its value stays the same, so the command you ran keeps working: open the tokens page, click the token's name, click **Edit**, set Contents to **Read-only** as in step 4, and click **Update** at the bottom of the page. Then run the same command again.
+- **It cannot see the repository.** The repository is not in the token's Repository access. Edit the token as above and add it.
+- **GitHub did not accept the token.** It has expired, been revoked, or was copied with a character missing. Make a new one.
+
+A repository of an organisation can need one more step: an organisation that asks for fine-grained tokens to be approved shows the token nothing of its repositories until an owner of the organisation approves it, under its settings, **Personal access tokens**, **Pending requests**.
 
 ---
 
@@ -196,7 +294,7 @@ If the library needs another, give that zip on the same line. A private reposito
 
 Put an `installer.yml` at the root of the repository. Any library can have one, whoever wrote it, and the one file serves both zephyr-installer and stm32-installer: each reads its own keys and leaves the other's alone.
 
-Every key zephyr-installer reads is below, each with what it does. Only `name` and `files` are required; leave out what your library does not need.
+Every key zephyr-installer reads is below, each with what it does. Only `name` and `files` are required; leave out what your library does not need. For a working one to copy, see [zephyr-installer-example](https://github.com/nimaltd/zephyr-installer-example).
 
 ```yaml
 name: example                      # the library's name, its folder and its Kconfig symbol
@@ -256,6 +354,8 @@ extras:                            # copied as they are, never compiled
 
 zephyr:                            # read by zephyr-installer only
   kconfig: EXAMPLE                 # the library's symbol; the name in capitals when left out
+  cmake:                           # lines of CMake added to the module, inside if(CONFIG_X)
+    - zephyr_library_link_libraries(mbedTLS)
   settings:                        # Kconfig symbols the user sets, CONFIG_<name> in the code
     - name: EXAMPLE_POLL_CHUNK     # the symbol, best started with the library's own
       type: int                    # bool, int, hex or string
@@ -271,6 +371,30 @@ Keys only stm32-installer reads, such as `requires.installer`, `requires.hal_mod
 Leave `version` out. The installer reads the version from the `@version` tag in the file comment of the first header listed, so it is written in the code and nowhere else.
 
 `requires.zephyr_installer` is the oldest zephyr-installer that reads the file correctly. It is checked before anything else in the file is read, so an older installer stops with a message saying to update, rather than read the file wrongly. Write it as three numbers, `1.0.0`: unquoted, YAML reads `1.10` as the decimal number `1.1`, and that is refused.
+
+### More CMake for a library
+
+A library that needs more than its files and its defines, a library of Zephyr's linked in or an option for its compiler, lists the lines under `zephyr.cmake`. They go into its module's `CMakeLists.txt`, inside `if(CONFIG_EXAMPLE)`, so they count only while the library is switched on:
+
+```yaml
+zephyr:
+  cmake:
+    - zephyr_library_link_libraries(mbedTLS)
+    - zephyr_library_compile_options(-O2)
+```
+
+`zephyr_library_...` commands act on the library's own files only. A library of headers alone has no library of its own, so it uses the `zephyr_...` ones, which act on the whole build. The lines run when the user configures the build, the same as a module the library ships itself would, so they are the library's to answer for.
+
+The user has a place in that file too. Its last lines are a `USER CODE` section, empty to start with, and every install keeps what is written in it, the way a configuration header keeps settings:
+
+```cmake
+  # USER CODE BEGIN EXAMPLE_CMAKE
+  zephyr_library_compile_definitions(EXAMPLE_DEBUG=1)
+  # USER CODE END EXAMPLE_CMAKE
+endif()
+```
+
+On an uninstall, a section with something in it is saved as a `.bak` before the file goes.
 
 ### Settings in the code
 

@@ -16,6 +16,8 @@ install:
     - DEMO_DEFINED=1
 
 zephyr:
+  cmake:
+    - zephyr_library_compile_definitions(DEMO_FROM_CMAKE=1)
   settings:
     - name: DEMO_BASE
       type: int

@@ -147,9 +147,19 @@ def test_each_required_symbol_is_reported_as_it_stands(library, app):
     found = _check(library, root, requires={"kconfig": ["GPIO", "LOG", "SPI"]})
 
     assert found == [
-        (OK, "CONFIG_GPIO=y is in prj.conf"),
-        (WARN, "prj.conf sets CONFIG_LOG=n, and demo needs y"),
+        (WARN, "prj.conf already sets CONFIG_GPIO=y, so the block has it commented out"),
+        (WARN, "prj.conf sets CONFIG_LOG=n, and demo needs y. The block has it commented out"),
         (INFO, "CONFIG_SPI=y goes into prj.conf"),
+    ]
+
+
+def test_the_librarys_own_switch_is_named_only_when_already_set(library, app):
+    assert _check(library, app()) == []
+
+    root = app(prj="CONFIG_DEMO=n\n", root=app().parent / "off")
+
+    assert _check(library, root) == [
+        (WARN, "prj.conf sets CONFIG_DEMO=n, and demo needs y. The block has it commented out"),
     ]
 
 

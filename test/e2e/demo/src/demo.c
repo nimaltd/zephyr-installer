@@ -39,6 +39,11 @@
 #error "DEMO_DEFINED did not reach the library"
 #endif
 
+/* From zephyr.cmake in installer.yml, for the library's own files only. */
+#ifndef DEMO_FROM_CMAKE
+#error "DEMO_FROM_CMAKE did not reach the library"
+#endif
+
 /*
  * ****************************************************************************************************
  * Public function implementations

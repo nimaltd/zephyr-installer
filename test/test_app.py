@@ -36,7 +36,7 @@ def test_the_module_is_added_above_find_package(library, app):
     assert outcome.status == CHANGED
     assert outcome.backup is not None
     assert read(root / "CMakeLists.txt") == CMAKELISTS.replace(
-        "find_package(", "\n" + BLOCK + "\n\nfind_package(", 1)
+        "find_package(", BLOCK + "\n\nfind_package(", 1)
 
 
 def app_cmake(root, lib, folder="modules/demo"):
@@ -184,10 +184,13 @@ def test_what_the_user_set_is_not_set_again(library, app):
     text = read(root / "prj.conf")
     block = text[text.index("# >>>"):]
 
-    assert "CONFIG_GPIO=y" in block
-    assert "CONFIG_I2C" not in block
-    assert "CONFIG_LOG" not in block
-    assert "CONFIG_DEMO" not in block
+    # Written, but commented out, saying who sets it: the block shows what the
+    # library asked for, and Kconfig reads none of it.
+    assert "# CONFIG_I2C=y  (left out: prj.conf sets CONFIG_I2C=n)" in block
+    assert "# CONFIG_LOG=y  (left out: prj.conf sets CONFIG_LOG=n)" in block
+    assert "# CONFIG_DEMO=y  (left out: prj.conf sets CONFIG_DEMO=n)" in block
+    assert appfile.ASSIGNED.findall(block) == [("GPIO", "y")]
+    assert appfile.NOT_SET.findall(block) == []
 
 
 def test_what_the_user_wrote_around_the_block_is_kept(library, app):
@@ -234,9 +237,20 @@ def test_a_symbol_set_in_prj_conf_counts_for_a_board_file(library, app):
     appfile.integrate_conf(root, _lib(library, requires={"kconfig": ["I2C", "SPI", "GPIO"]}), "boards/x.conf")
     block = read(root / "boards" / "x.conf").split("# >>>")[1]
 
-    assert "CONFIG_GPIO=y" in block
-    assert "CONFIG_I2C" not in block
-    assert "CONFIG_SPI" not in block
+    assert "# CONFIG_I2C=y  (left out: prj.conf sets CONFIG_I2C=y)" in block
+    assert "# CONFIG_SPI=y  (left out: boards/x.conf sets CONFIG_SPI=n)" in block
+    assert appfile.ASSIGNED.findall(block) == [("GPIO", "y"), ("DEMO", "y")]
+
+
+def test_the_outcome_says_which_lines_are_left_commented(library, app):
+    root = app(prj="CONFIG_I2C=n\n")
+
+    outcome = appfile.integrate_conf(root, _lib(library, requires={"kconfig": ["I2C"]}), "prj.conf")
+
+    assert outcome.status == CHANGED
+    assert outcome.steps == [
+        "CONFIG_I2C=y is left commented: prj.conf sets CONFIG_I2C=n, and that is the one used."
+    ]
 
 
 # ----------------------------------------------------------------------------

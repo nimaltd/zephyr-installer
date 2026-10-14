@@ -21,7 +21,8 @@ def test_the_module_is_named_apart_from_zephyrs_own(library):
 
 
 def test_the_cmakelists_builds_the_files_only_when_the_symbol_is_set(library):
-    text = module.cmakelists(_lib(library, defines=["DEMO_DEFINED=1"]))
+    text = module.cmakelists(_lib(library, defines=["DEMO_DEFINED=1"], zephyr={"cmake": [
+        "zephyr_library_compile_options(-O2)", "  zephyr_library_link_libraries(mbedTLS)  "]}))
     body = text[text.index("if(CONFIG_DEMO)"):]
 
     assert body == """if(CONFIG_DEMO)
@@ -37,6 +38,16 @@ def test_the_cmakelists_builds_the_files_only_when_the_symbol_is_set(library):
   zephyr_compile_definitions(
     DEMO_DEFINED=1
   )
+
+  # From demo's installer.yml.
+  zephyr_library_compile_options(-O2)
+  zephyr_library_link_libraries(mbedTLS)
+
+  # Lines of your own for demo, such as
+  # zephyr_library_compile_definitions(), go between these two, and every
+  # install keeps them.
+  # USER CODE BEGIN DEMO_CMAKE
+  # USER CODE END DEMO_CMAKE
 endif()
 """
 
@@ -52,7 +63,8 @@ def test_a_library_of_headers_only_has_no_library_to_build(library):
     text = module.cmakelists(_lib(library, sources=()))
 
     assert "zephyr_include_directories(" in text
-    assert "zephyr_library" not in text
+    assert "zephyr_library_" not in text.replace("zephyr_library_compile_definitions()", "")
+    assert "# zephyr_compile_definitions(), go between these two" in text
 
 
 def test_a_file_name_cannot_break_out_of_its_argument(library):
@@ -147,3 +159,65 @@ def test_a_library_with_its_own_module_is_left_alone(library, tmp_path):
     assert outcome.status == ALREADY
     assert "its own zephyr/module.yml" in outcome.message
     assert sorted(p.name for p in (folder / "zephyr").iterdir()) == ["module.yml"]
+
+
+def test_remove_deletes_only_what_write_made(library, tmp_path):
+    folder = tmp_path / "modules" / "demo"
+    module.write(_lib(library), folder)
+    (folder / "zephyr" / "notes.txt").write_text("mine\n", encoding="utf-8")
+
+    module.remove(folder)
+
+    assert sorted(p.name for p in (folder / "zephyr").iterdir()) == ["notes.txt"]
+
+    (folder / "zephyr" / "notes.txt").unlink()
+    (folder / "zephyr" / "module.yml").write_text("name: theirs\n", encoding="utf-8")
+    module.remove(folder)
+
+    assert (folder / "zephyr" / "module.yml").read_text(encoding="utf-8") == "name: theirs\n"
+
+
+def test_your_lines_in_the_cmakelists_are_kept_on_every_install(library, tmp_path):
+    folder = tmp_path / "modules" / "demo"
+    module.write(_lib(library), folder)
+    path = folder / "zephyr" / "CMakeLists.txt"
+    mine = "  zephyr_library_compile_definitions(DEMO_DEBUG=1)\n"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "# USER CODE BEGIN DEMO_CMAKE\n", "# USER CODE BEGIN DEMO_CMAKE\n" + mine), encoding="utf-8")
+
+    outcome = module.write(_lib(library, sources=("demo.c", "more.c")), folder)
+
+    text = path.read_text(encoding="utf-8")
+    assert mine in text
+    assert "/more.c" in text
+    assert "Kept your USER CODE DEMO_CMAKE in zephyr/CMakeLists.txt." in outcome.steps
+
+
+def test_a_cmakelists_whose_markers_were_broken_is_saved_whole(library, tmp_path):
+    folder = tmp_path / "modules" / "demo"
+    module.write(_lib(library), folder)
+    path = folder / "zephyr" / "CMakeLists.txt"
+    broken = path.read_text(encoding="utf-8").replace("  # USER CODE END DEMO_CMAKE\n", "  mine()\n")
+    path.write_text(broken, encoding="utf-8")
+
+    outcome = module.write(_lib(library), folder)
+
+    assert outcome.backup is not None
+    assert outcome.backup.read_text(encoding="utf-8") == broken
+    assert path.read_text(encoding="utf-8") == module.cmakelists(_lib(library))
+
+
+def test_your_lines_are_saved_when_the_module_is_removed(library, tmp_path):
+    folder = tmp_path / "modules" / "demo"
+    module.write(_lib(library), folder)
+    assert module.remove(folder) is None
+
+    module.write(_lib(library), folder)
+    path = folder / "zephyr" / "CMakeLists.txt"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "# USER CODE BEGIN DEMO_CMAKE\n", "# USER CODE BEGIN DEMO_CMAKE\n  mine()\n"), encoding="utf-8")
+
+    saved = module.remove(folder)
+
+    assert "  mine()" in saved.read_text(encoding="utf-8")
+    assert not path.exists()

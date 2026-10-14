@@ -255,25 +255,52 @@ def integrate_cmake(project_root, library, destination):
 
         rest = text[:start] + text[end:]
 
+    # Right above find_package(Zephyr), with a blank line between, and nothing
+    # added above it, so an uninstall can give the file back as it was.
     first = FIND_ZEPHYR.search(rest).start()
-    before = rest[:first]
-
-    # A blank line either side, unless one is there already.
-    gap = newline if before and not before.endswith(newline + newline) else ""
-    updated = before + gap + block + newline + newline + rest[first:]
+    updated = rest[:first] + block + newline + newline + rest[first:]
 
     return _write_block(path, CMAKELISTS, text, updated, name)
 
 
-def conf_block(library, project_root, conf, newline="\n"):
-    """The lines this tool owns in the Kconfig file, leaving out what the user sets."""
-    taken = assigned(project_root, library.name, conf)
-    wanted = [requirement.line for requirement in library.requires.kconfig
-              if requirement.symbol not in taken]
+def wanted(library):
+    """Every line the library asks for: (symbol, value, line), its own switch last."""
+    found = [(requirement.symbol, requirement.value, requirement.line)
+             for requirement in library.requires.kconfig]
     symbol = library.zephyr.symbol
 
-    if symbol not in taken:
-        wanted.append(f"CONFIG_{symbol}=y")
+    return found + [(symbol, "y", f"CONFIG_{symbol}=y")]
+
+
+def already_set(library, project_root, conf):
+    """
+    The lines the library asks for that the user's own files set already:
+    (symbol, wanted value, line, value set, file).
+    """
+    taken = assigned(project_root, library.name, conf)
+
+    return [(symbol, value, line) + taken[symbol]
+            for symbol, value, line in wanted(library) if symbol in taken]
+
+
+def conf_block(library, project_root, conf, newline="\n"):
+    """
+    The lines this tool owns in the Kconfig file.
+
+    A symbol the user sets already is written too, commented out with who sets
+    it, so the block shows what the library asked for and why it is not set
+    here. Set again here, the line read last would win and quietly undo the
+    user's choice.
+    """
+    taken = assigned(project_root, library.name, conf)
+    body = []
+
+    for symbol, _value, line in wanted(library):
+        if symbol in taken:
+            have, where = taken[symbol]
+            body.append(f"# {line}  (left out: {where} sets CONFIG_{symbol}={have})")
+        else:
+            body.append(line)
 
     lines = [
         MARK_OPEN.format(name=library.name),
@@ -285,7 +312,7 @@ def conf_block(library, project_root, conf, newline="\n"):
         lines.append("# Its settings, as they are unless you set them:")
         lines.extend(f"#   {setting.line}" for setting in library.zephyr.settings)
 
-    lines.extend(wanted)
+    lines.extend(body)
     lines.append(MARK_CLOSE.format(name=library.name))
 
     return newline.join(lines)
@@ -319,7 +346,15 @@ def integrate_conf(project_root, library, conf):
         head = text.rstrip("\r\n")
         updated = (head + newline + newline if head else "") + block + newline
 
-    return _write_block(path, label, text, updated, library.name)
+    outcome = _write_block(path, label, text, updated, library.name)
+
+    # Said again where the file's changes are, so it is not missed.
+    outcome.steps += [
+        f"{line} is left commented: {where} sets CONFIG_{symbol}={have}, and that is the one used."
+        for symbol, _value, line, have, where in already_set(library, project_root, conf)
+    ]
+
+    return outcome
 
 
 def integrate(project_root, library, destination, conf):
@@ -330,3 +365,78 @@ def integrate(project_root, library, destination, conf):
         outcomes.append(integrate_conf(project_root, library, conf))
 
     return outcomes
+
+
+def _cut_block(path, label, name):
+    """
+    Take this library's block out of one file, with the blank line it brought.
+
+    Returns an Outcome, ALREADY when the file has no block of it.
+    """
+    try:
+        text = read(path)
+    except (OSError, UnicodeDecodeError):
+        return Outcome(label, ALREADY, f"{label} has nothing of {name}.")
+
+    span = block_span(text, name)
+
+    if span is None:
+        return Outcome(label, ALREADY, f"{label} has nothing of {name}.")
+
+    if span is False:
+        return Outcome(label, MANUAL, f"{label} has a half written zephyr-installer block for {name}. "
+                       "Take it out by hand.")
+
+    newline = line_ending(text)
+    start, end = span
+
+    # The block's own line ending, then the one blank line that came with it:
+    # below it in CMakeLists.txt, or above it at the end of a Kconfig file.
+    if text.startswith(newline, end):
+        end += len(newline)
+
+    if text.startswith(newline, end):
+        end += len(newline)
+    elif end == len(text) and text[:start].endswith(newline + newline):
+        start -= len(newline)
+
+    saved = backup(path)
+    write(path, text[:start] + text[end:])
+
+    return Outcome(label, CHANGED, f"Removed {name} from {label}.", backup=saved)
+
+
+def uninstall(project_root, name):
+    """Take this library's blocks out of CMakeLists.txt and its Kconfig file. A list of Outcome."""
+    outcomes = []
+    cmakelists = Path(project_root) / CMAKELISTS
+
+    if cmakelists.is_file():
+        outcomes.append(_cut_block(cmakelists, CMAKELISTS, name))
+
+    conf = holding(project_root, name)
+
+    if conf is not None:
+        outcomes.append(_cut_block(Path(project_root) / conf, conf, name))
+
+    return outcomes
+
+
+def leftover(project_root, symbols):
+    """
+    Lines of the application's Kconfig files that still set one of symbols:
+    {file: [line, ...]}. Read once the library's own block is out.
+    """
+    wanted = set(symbols)
+    found = {}
+
+    for relative in conf_files(project_root):
+        text = _text(Path(project_root) / relative)
+        lines = [line.strip() for line in text.splitlines()
+                 if (ASSIGNED.match(line) and ASSIGNED.match(line).group(1) in wanted)
+                 or (NOT_SET.match(line) and NOT_SET.match(line).group(1) in wanted)]
+
+        if lines:
+            found[relative] = lines
+
+    return found
