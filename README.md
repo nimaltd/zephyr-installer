@@ -18,11 +18,13 @@ Install the installer once. This needs internet:
 pip install zephyr-installer
 ```
 
-Then, from your application's folder, the one holding `CMakeLists.txt` and `prj.conf`:
+Then, from your application's folder, the one holding `CMakeLists.txt` and `prj.conf`, install a library by its GitHub owner and name. To see it work first, take [zephyr-installer-example](https://github.com/nimaltd/zephyr-installer-example), a library made for trying the installer on:
 
 ```bash
-zephyr-installer owner/example
+zephyr-installer nimaltd/zephyr-installer-example
 ```
+
+It builds in any Zephyr application, `native_sim` included, with its settings in Kconfig. Its README walks through an install, a setting changed in `prj.conf`, an option, and an uninstall. Any other library goes in the same way, as `zephyr-installer owner/example`.
 
 Then build as always:
 
@@ -33,16 +35,6 @@ west build -b nrf52840dk/nrf52840
 To update it later, `pip install --upgrade zephyr-installer`. To remove it, `pip uninstall zephyr-installer`.
 
 On Windows, if `zephyr-installer` is not found after installing, pip put it in a folder that is not on your PATH. `python -m zephyr_installer owner/example` runs the same thing.
-
-### Try it first
-
-There is a library made for trying the installer on, [zephyr-installer-example](https://github.com/nimaltd/zephyr-installer-example). It builds in any Zephyr application, `native_sim` included, with its settings in Kconfig. Its README walks through an install, an update that keeps a setting you changed, an option, and an uninstall. From your application's folder:
-
-```bash
-zephyr-installer nimaltd/zephyr-installer-example
-```
-
-Its `installer.yml` has every key with a comment, so it is also a starting point for making your own library installable.
 
 ### What happens
 
