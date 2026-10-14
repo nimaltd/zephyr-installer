@@ -11,7 +11,7 @@ github.com/nimaltd/core-installer. What a Zephyr application is, is in zephyr.py
 See https://github.com/nimaltd/zephyr-installer
 """
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 # Before anything of the core is used: it asks the target for every answer
 # that depends on the kind of project.
