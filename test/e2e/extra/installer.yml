@@ -1,0 +1,44 @@
+# A second library made only for the tests, with what 2.0.0 brings: files of
+# the application's own made once, groups of CMake lines in three places, and
+# sysbuild settings. The application's main.c checks each reached the build.
+
+name: extra
+description: What zephyr-installer 2.0.0 brings, in a real Zephyr build
+repository: https://github.com/nimaltd/zephyr-installer
+
+requires:
+  zephyr_installer: 2.0.0
+
+install:
+  layout: mirror
+
+files:
+  headers:
+    - src/extra.h
+  sources:
+    - src/extra.c
+
+once:
+  - from: project/VERSION        # Zephyr reads it from the application's folder
+  - from: project/extra.conf     # added to the build by the conf group below
+
+zephyr:
+  settings:
+    - name: EXTRA_FROM_CONF
+      type: bool
+      default: false
+      prompt: Set by extra.conf, which the conf group adds to the build
+  sysbuild:
+    - BOOTLOADER_NONE
+  cmake:
+    - label: own
+      lines:
+        - zephyr_library_compile_definitions(EXTRA_OWN=1)
+    - label: conf
+      where: before-zephyr
+      lines:
+        - list(APPEND EXTRA_CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/extra.conf")
+    - label: after
+      where: after-zephyr
+      lines:
+        - target_compile_definitions(app PRIVATE EXTRA_AFTER=1)

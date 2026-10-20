@@ -12,7 +12,8 @@ import re
 from pathlib import Path
 
 from . import app, module
-from .core import console
+from .core import blocks, console
+from .core.installer import InstallError
 from .core.manifest import ManifestError
 from .core.target import CHANGED, INFO, MANUAL, OK, WARN, Finding, Outcome, Target
 
@@ -23,6 +24,15 @@ SYMBOL = re.compile(r"^[A-Z0-9_]+$")
 # number, or a string in quotes. Written into prj.conf as it stands, so nothing
 # else gets through.
 VALUE = re.compile(r'^(?:y|n|-?[0-9]+|0x[0-9A-Fa-f]+|"[^"\\\n]*")$')
+
+# Where a group of CMake lines goes: the module's own CMakeLists.txt, inside
+# its if(CONFIG_...); the application's, above find_package(Zephyr), for what
+# Zephyr reads as it starts, such as EXTRA_CONF_FILE; or the application's, at
+# its end, for what needs the application's own targets.
+MODULE = "module"
+BEFORE_ZEPHYR = "before-zephyr"
+AFTER_ZEPHYR = "after-zephyr"
+PLACES = (MODULE, BEFORE_ZEPHYR, AFTER_ZEPHYR)
 
 # What a setting can be, as Kconfig names its types.
 TYPES = ("bool", "int", "hex", "string")
@@ -73,6 +83,42 @@ class Requirement:
 
     def __repr__(self):
         return f"Requirement({self.line})"
+
+
+class SysbuildSetting:
+    """
+    A setting of sysbuild, which builds MCUboot and the application as images
+    of one build: SB_CONFIG_BOOTLOADER_MCUBOOT=y in the application's
+    sysbuild.conf. Written as zephyr.sysbuild lists it, without SB_CONFIG_.
+
+    The value is written exactly as given. "${APP_DIR}/sign_key.pem" is expanded
+    by sysbuild itself, when it writes each image's configuration, so it must
+    reach sysbuild.conf as it is.
+    """
+
+    def __init__(self, text):
+        name, _, value = str(text).partition("=")
+        name = name.strip()
+
+        if name.startswith("SB_CONFIG_"):
+            name = name[len("SB_CONFIG_"):]
+
+        self.symbol = _symbol(name, "zephyr.sysbuild")
+        self.value = value.strip() or "y"
+
+        if not VALUE.match(self.value):
+            raise ManifestError(
+                f"zephyr.sysbuild has {text!r}. Give a symbol, which is set to y, or "
+                'SYMBOL=value, with y, n, a number, 0x and a hex number, or "text".'
+            )
+
+    @property
+    def line(self):
+        """The line in sysbuild.conf."""
+        return f"SB_CONFIG_{self.symbol}={self.value}"
+
+    def __repr__(self):
+        return f"SysbuildSetting({self.line})"
 
 
 class Peripheral:
@@ -215,18 +261,25 @@ class ZephyrPart:
         if twice:
             raise ManifestError(f"zephyr.settings has {', '.join(twice)} more than once.")
 
-        # Lines of CMake the library needs beyond its files, written as they
-        # stand into its module's CMakeLists.txt. They run when the user
-        # configures the build, as a library's own module.yml would.
-        cmake = data.get("cmake") or []
+        # Lines of CMake the library needs beyond its files, in labelled groups,
+        # each written where its where says: into the module's CMakeLists.txt,
+        # or the application's, above find_package(Zephyr) or at its end. A
+        # plain list of lines is the form from before 2.0.0: one group, in the
+        # module, written as it always was.
+        self.cmake = blocks.groups(data.get("cmake"), "zephyr.cmake", PLACES, MODULE)
 
-        if not isinstance(cmake, list) or not all(isinstance(line, str) for line in cmake):
-            raise ManifestError("zephyr.cmake is a list of lines of CMake, each in quotes when it holds a colon.")
+        # Settings of sysbuild, for the application's sysbuild.conf.
+        sysbuild = data.get("sysbuild") or []
 
-        if any("\n" in line or "\r" in line for line in cmake):
-            raise ManifestError("zephyr.cmake has a line that runs onto another. Give each line on its own.")
+        if not isinstance(sysbuild, list):
+            raise ManifestError("zephyr.sysbuild is a list of settings, such as [BOOTLOADER_MCUBOOT].")
 
-        self.cmake = [line.strip() for line in cmake if line.strip()]
+        self.sysbuild = [SysbuildSetting(entry) for entry in sysbuild]
+        names = [setting.symbol for setting in self.sysbuild]
+        twice = sorted({name for name in names if names.count(name) > 1})
+
+        if twice:
+            raise ManifestError(f"zephyr.sysbuild has {', '.join(twice)} more than once.")
 
 
 class Zephyr(Target):
@@ -263,6 +316,31 @@ class Zephyr(Target):
     def take_arguments(self, args, ask):
         self.conf_given = getattr(args, "conf", None)
         self.ask = ask
+
+    def project_root(self, given):
+        """The application's folder. Refuses sysbuild.conf as the Kconfig file of --conf."""
+        if self.conf_given is not None and Path(self.conf_given).name == app.SYSBUILD_CONF:
+            raise InstallError(
+                f"{app.SYSBUILD_CONF} holds the settings of sysbuild, not the application's, so a "
+                "library is not switched on there. Its sysbuild settings go in zephyr.sysbuild of "
+                "its installer.yml. Leave out --conf, or give prj.conf or a board's own file."
+            )
+
+        return given
+
+    def managed_files(self, project_root, library):
+        """
+        The application's files this edits, which a once file must never be:
+        CMakeLists.txt, the Kconfig file with the library's block, and
+        sysbuild.conf when the library has sysbuild settings.
+        """
+        found = [self.record_name, app.CMAKELISTS]
+        found.append(self.conf_of.get(library.name) or app.holding(project_root, library.name) or app.PRJ_CONF)
+
+        if getattr(getattr(library, "zephyr", None), "sysbuild", None):
+            found.append(app.SYSBUILD_CONF)
+
+        return found
 
     def default_folder(self, library):
         """Libraries go together in modules/ of the application."""
@@ -302,6 +380,28 @@ class Zephyr(Target):
 
     def read_manifest(self, manifest, data):
         manifest.zephyr = ZephyrPart(manifest, data.get("zephyr"))
+
+        # A label names one group, among the library's and all its options'.
+        labels = [group.label for group in manifest.zephyr.cmake]
+
+        for option in manifest.options.values():
+            labels += [group.label for group in getattr(option, "zephyr_cmake", [])]
+
+        twice = sorted({label for label in labels if labels.count(label) > 1})
+
+        if twice:
+            raise ManifestError(f"zephyr.cmake has two groups labelled {', '.join(twice)}, its "
+                                "options' groups counted. Give each its own label.")
+
+    def read_option(self, option, data):
+        """An option's own groups of CMake lines, written while it is taken."""
+        part = data.get("zephyr") if isinstance(data, dict) else None
+
+        if part is not None and not isinstance(part, dict):
+            raise ManifestError(f"options.{option.name}.zephyr should hold cmake.")
+
+        option.zephyr_cmake = blocks.groups((part or {}).get("cmake"), f"options.{option.name}.zephyr.cmake",
+                                            PLACES, MODULE, legacy=False)
 
     def read_requirements(self, requirements, data):
         """The Zephyr part of requires: Kconfig symbols, and hardware."""

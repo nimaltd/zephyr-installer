@@ -1,14 +1,19 @@
 """
-The application's own files: CMakeLists.txt and a Kconfig file such as prj.conf.
+The application's own files: CMakeLists.txt, a Kconfig file such as prj.conf,
+and sysbuild.conf.
 
-Two short blocks are added, each between marker lines so it can be found and
+Short blocks are added, each between marker lines so it can be found and
 written again on the next install:
 
     CMakeLists.txt  adds the library's folder to ZEPHYR_EXTRA_MODULES, before
-                    find_package(Zephyr), which is when Zephyr reads it
+                    find_package(Zephyr), which is when Zephyr reads it. And
+                    any group of the library's CMake lines whose place is the
+                    application's: above find_package(Zephyr), or at the end
     prj.conf        sets the library's symbol, and the ones it needs. Any
                     other Kconfig file of the application can take it instead,
                     a board's own in boards/ for one, as the user chooses
+    sysbuild.conf   the library's settings of sysbuild, MCUboot's for one,
+                    when it has any. Never the application's Kconfig file
 
 Both files are the user's, so the rules of every edit here hold: a copy is
 taken before anything changes, a file this cannot read safely is left alone
@@ -24,15 +29,25 @@ import os
 import re
 from pathlib import Path
 
+from .core import blocks
 from .core.files import backup
+from .core.installer import installed_libraries
 from .core.target import ALREADY, CHANGED, MANUAL, Outcome
-from .module import cmake_quote
+from .module import cmake_quote, groups
 
 CMAKELISTS = "CMakeLists.txt"
 PRJ_CONF = "prj.conf"
+SYSBUILD_CONF = "sysbuild.conf"
+
+INSTALLER = "zephyr-installer"
 
 MARK_OPEN = "# >>> zephyr-installer: {name} >>>"
 MARK_CLOSE = "# <<< zephyr-installer: {name} <<<"
+
+# Where a group goes in the application's CMakeLists.txt: the same names as
+# zephyr.py's, here to keep the two modules apart.
+BEFORE_ZEPHYR = "before-zephyr"
+AFTER_ZEPHYR = "after-zephyr"
 
 # The line Zephyr's build starts at. CMake commands ignore case, and only a
 # line that starts with it counts, so a commented out one does not.
@@ -43,6 +58,15 @@ FIND_ZEPHYR = re.compile(r"^[ \t]*find_package[ \t]*\([ \t]*Zephyr\b", re.MULTIL
 # line feed, so the carriage return is allowed for, never taken into a value.
 ASSIGNED = re.compile(r"^[ \t]*CONFIG_([A-Za-z0-9_]+)[ \t]*=[ \t]*(.*?)[ \t\r]*$", re.MULTILINE)
 NOT_SET = re.compile(r"^[ \t]*#[ \t]*CONFIG_([A-Za-z0-9_]+) is not set[ \t\r]*$", re.MULTILINE)
+
+# The same two forms in sysbuild.conf, where every symbol starts SB_CONFIG_.
+SB_ASSIGNED = re.compile(r"^[ \t]*SB_CONFIG_([A-Za-z0-9_]+)[ \t]*=[ \t]*(.*?)[ \t\r]*$", re.MULTILINE)
+SB_NOT_SET = re.compile(r"^[ \t]*#[ \t]*SB_CONFIG_([A-Za-z0-9_]+) is not set[ \t\r]*$", re.MULTILINE)
+
+
+def marker(name, label=None):
+    """The two lines around a block of this library, or of one of its groups."""
+    return blocks.Marker(INSTALLER, name, label)
 
 
 def read(path):
@@ -83,7 +107,10 @@ def conf_files(project_root):
     then any other .conf beside it, then the boards' own in boards/.
     """
     root = Path(project_root)
-    found = sorted(p.name for p in root.glob("*.conf") if p.is_file())
+
+    # sysbuild.conf is sysbuild's, not the application's: a library is never
+    # switched on there, so it is never offered.
+    found = sorted(p.name for p in root.glob("*.conf") if p.is_file() and p.name != SYSBUILD_CONF)
     found += sorted(f"boards/{p.name}" for p in (root / "boards").glob("*.conf") if p.is_file())
 
     if PRJ_CONF in found:
@@ -98,18 +125,7 @@ def block_span(text, name):
     Where this library's block is: (start, end), None when it has none, or
     False when only its first marker is there.
     """
-    open_mark = MARK_OPEN.format(name=name)
-    close_mark = MARK_CLOSE.format(name=name)
-
-    if open_mark not in text:
-        return None
-
-    start = text.index(open_mark)
-
-    if close_mark not in text[start:]:
-        return False
-
-    return start, text.index(close_mark, start) + len(close_mark)
+    return blocks.span(text, marker(name))
 
 
 def holding(project_root, name):
@@ -118,11 +134,12 @@ def holding(project_root, name):
 
     Looked for one folder deeper than the files offered, so one the user gave
     with --conf, such as conf/debug.conf, is found again on an update. Not in
-    a build folder, and not in a hidden one.
+    a build folder, and not in a hidden one. Not in sysbuild.conf either, nor
+    in sysbuild/, which holds the settings of the other images.
     """
     root = Path(project_root)
     found = [p for p in list(root.glob("*.conf")) + list(root.glob("*/*.conf"))
-             if p.is_file() and not p.relative_to(root).parts[0].startswith(("build", "."))]
+             if p.is_file() and not p.relative_to(root).parts[0].startswith(("build", ".", "sysbuild"))]
 
     for path in sorted(found):
         if block_span(_text(path), name) is not None:
@@ -194,6 +211,10 @@ def _write_block(path, label, text, updated, what):
     except OSError as error:
         return Outcome(label, MANUAL, f"Could not write {label}: {error}", backup=saved)
 
+    # An update, when the file had a block of the library's before.
+    if f">>> zephyr-installer: {what} >>>" in text or f">>> zephyr-installer: {what}/" in text:
+        return Outcome(label, CHANGED, f"Updated {what} in {label}.", backup=saved)
+
     return Outcome(label, CHANGED, f"Added {what} to {label}.", backup=saved)
 
 
@@ -219,9 +240,13 @@ def cmake_block(library, destination, project_root, newline="\n"):
 
 
 def integrate_cmake(project_root, library, destination):
-    """Add the library's folder to ZEPHYR_EXTRA_MODULES. Returns an Outcome."""
+    """
+    Add the library's folder to ZEPHYR_EXTRA_MODULES, and write its groups of
+    CMake lines whose place is the application's. Returns an Outcome.
+    """
     path = find_cmakelists(project_root)
     name = library.name
+    ours = [group for group in groups(library) if group.where in (BEFORE_ZEPHYR, AFTER_ZEPHYR)]
 
     if path is None:
         return Outcome(
@@ -246,21 +271,88 @@ def integrate_cmake(project_root, library, destination):
 
         # Where it is, when that is above find_package(Zephyr).
         if start < FIND_ZEPHYR.search(text).start():
-            return _write_block(path, CMAKELISTS, text, text[:start] + block + text[end:], name)
+            updated = text[:start] + block + text[end:]
+        else:
+            # Below it the list does nothing, since Zephyr has looked for modules
+            # by then. It comes out, with the line it stood on, and goes above.
+            if text.startswith(newline, end):
+                end += len(newline)
 
-        # Below it the list does nothing, since Zephyr has looked for modules
-        # by then. It comes out, with the line it stood on, and goes above.
-        if text.startswith(newline, end):
-            end += len(newline)
+            rest = text[:start] + text[end:]
+            updated = None
+    else:
+        updated = None
 
-        rest = text[:start] + text[end:]
+    if updated is None:
+        # Right above find_package(Zephyr), with a blank line between, and
+        # nothing added above it, so an uninstall can give the file back as it was.
+        first = FIND_ZEPHYR.search(rest).start()
+        updated = rest[:first] + block + newline + newline + rest[first:]
 
-    # Right above find_package(Zephyr), with a blank line between, and nothing
-    # added above it, so an uninstall can give the file back as it was.
-    first = FIND_ZEPHYR.search(rest).start()
-    updated = rest[:first] + block + newline + newline + rest[first:]
+    updated = _with_groups(updated, library, ours, newline)
 
-    return _write_block(path, CMAKELISTS, text, updated, name)
+    if updated is False:
+        return _half_written(CMAKELISTS, name, "\n".join(
+            line for group in ours for line in group_lines(library, group)))
+
+    outcome = _write_block(path, CMAKELISTS, text, updated, name)
+    markers = [marker(name)] + [marker(name, group.label) for group in ours]
+    outcome.blocks = {CMAKELISTS: blocks.fingerprints(updated, markers)}
+    outcome.steps += _edited(project_root, name, CMAKELISTS, markers, text)
+
+    return outcome
+
+
+def group_lines(library, group):
+    """A group's block in the application's CMakeLists.txt, as lines."""
+    name = marker(library.name, group.label)
+
+    return ([name.open, f"# From {library.name}'s installer.yml, and written again on every install."]
+            + list(group.lines) + [name.close])
+
+
+def _with_groups(text, library, ours, newline):
+    """
+    text with the library's groups for the application each in its place, and
+    any group it no longer has taken out. False when one is half written.
+    """
+    wanted = {group.label for group in ours}
+
+    for label in blocks.labels(text, INSTALLER, library.name):
+        if label not in wanted:
+            found = blocks.span(text, marker(library.name, label))
+
+            if found is False:
+                return False
+
+            text = blocks.cut(text, found, newline)
+
+    for group in ours:
+        lines = group_lines(library, group)[1:-1]
+        anchor = _above_zephyr if group.where == BEFORE_ZEPHYR else None
+        text = blocks.place(text, marker(library.name, group.label), lines, newline, anchor)
+
+        if text is False:
+            return False
+
+    return text
+
+
+def _above_zephyr(text):
+    """Where find_package(Zephyr)'s line starts, for a group to go above it."""
+    found = FIND_ZEPHYR.search(text)
+
+    return blocks.line_start(text, found.start()) if found else None
+
+
+def _edited(project_root, name, label, markers, text):
+    """A line for each block the user changed inside since it was written."""
+    entry = installed_libraries(project_root).get(name)
+    recorded = entry.get("blocks") if isinstance(entry, dict) else None
+
+    return [f"Your change inside the {found.name} block is replaced: the block is written again on every "
+            "install. The file as it was is in the backup."
+            for found in markers if blocks.edited(recorded, label, found, text)]
 
 
 def wanted(library):
@@ -347,11 +439,96 @@ def integrate_conf(project_root, library, conf):
         updated = (head + newline + newline if head else "") + block + newline
 
     outcome = _write_block(path, label, text, updated, library.name)
+    outcome.blocks = {label: blocks.fingerprints(updated, [marker(library.name)])}
+    outcome.steps += _edited(project_root, library.name, label, [marker(library.name)], text)
 
     # Said again where the file's changes are, so it is not missed.
     outcome.steps += [
         f"{line} is left commented: {where} sets CONFIG_{symbol}={have}, and that is the one used."
         for symbol, _value, line, have, where in already_set(library, project_root, conf)
+    ]
+
+    return outcome
+
+
+def sysbuild_assigned(text, name):
+    """Every symbol sysbuild.conf sets outside this library's block: {symbol: value}."""
+    text = blocks.outside(text, marker(name))
+    found = {}
+
+    for symbol in SB_NOT_SET.findall(text):
+        found.setdefault(symbol, "n")
+
+    for symbol, value in SB_ASSIGNED.findall(text):
+        found.setdefault(symbol, value)
+
+    return found
+
+
+def sysbuild_block(library, text, newline="\n"):
+    """
+    The lines this tool owns in sysbuild.conf. A symbol the user sets outside
+    it is written commented out, with what the user set, as in conf_block.
+    """
+    taken = sysbuild_assigned(text, library.name)
+    found = marker(library.name)
+    lines = [
+        found.open,
+        "# Added by zephyr-installer, and written again on every install, so set",
+        f"# {library.name}'s sysbuild settings below this block rather than in it.",
+    ]
+
+    for setting in library.zephyr.sysbuild:
+        if setting.symbol in taken:
+            lines.append(f"# {setting.line}  (left out: {SYSBUILD_CONF} sets "
+                         f"SB_CONFIG_{setting.symbol}={taken[setting.symbol]})")
+        else:
+            lines.append(setting.line)
+
+    lines.append(found.close)
+
+    return newline.join(lines)
+
+
+def integrate_sysbuild(project_root, library):
+    """
+    Write the library's sysbuild settings into sysbuild.conf, made when it is
+    missing, or take out the block of a version that had some. None for a
+    library that has none and never had.
+    """
+    path = Path(project_root) / SYSBUILD_CONF
+
+    try:
+        text = read(path) if path.exists() else ""
+    except (OSError, UnicodeDecodeError) as error:
+        return Outcome(SYSBUILD_CONF, MANUAL, f"Could not read {SYSBUILD_CONF}: {error}",
+                       sysbuild_block(library, "").splitlines())
+
+    span = block_span(text, library.name)
+
+    if not library.zephyr.sysbuild:
+        return _cut_block(path, SYSBUILD_CONF, library.name) if span else None
+
+    newline = line_ending(text)
+    block = sysbuild_block(library, text, newline)
+
+    if span is False:
+        return _half_written(SYSBUILD_CONF, library.name, block)
+
+    if span is not None:
+        updated = text[:span[0]] + block + text[span[1]:]
+    else:
+        head = text.rstrip("\r\n")
+        updated = (head + newline + newline if head else "") + block + newline
+
+    outcome = _write_block(path, SYSBUILD_CONF, text, updated, library.name)
+    outcome.blocks = {SYSBUILD_CONF: blocks.fingerprints(updated, [marker(library.name)])}
+    outcome.steps += _edited(project_root, library.name, SYSBUILD_CONF, [marker(library.name)], text)
+    taken = sysbuild_assigned(text, library.name)
+    outcome.steps += [
+        f"{setting.line} is left commented: {SYSBUILD_CONF} sets SB_CONFIG_{setting.symbol}="
+        f"{taken[setting.symbol]}, and that is the one used."
+        for setting in library.zephyr.sysbuild if setting.symbol in taken
     ]
 
     return outcome
@@ -363,13 +540,18 @@ def integrate(project_root, library, destination, conf):
 
     if find_cmakelists(project_root) is not None:
         outcomes.append(integrate_conf(project_root, library, conf))
+        sysbuild = integrate_sysbuild(project_root, library)
+
+        if sysbuild is not None:
+            outcomes.append(sysbuild)
 
     return outcomes
 
 
 def _cut_block(path, label, name):
     """
-    Take this library's block out of one file, with the blank line it brought.
+    Take this library's blocks out of one file, with the blank line each
+    brought: its own, and in CMakeLists.txt every group of its CMake lines.
 
     Returns an Outcome, ALREADY when the file has no block of it.
     """
@@ -378,36 +560,34 @@ def _cut_block(path, label, name):
     except (OSError, UnicodeDecodeError):
         return Outcome(label, ALREADY, f"{label} has nothing of {name}.")
 
-    span = block_span(text, name)
+    newline = line_ending(text)
+    updated = text
 
-    if span is None:
+    for found in [marker(name)] + [marker(name, group) for group in blocks.labels(text, INSTALLER, name)]:
+        span = blocks.span(updated, found)
+
+        if span is False:
+            return Outcome(label, MANUAL, f"{label} has a half written zephyr-installer block for "
+                           f"{found.name}. Take it out by hand.")
+
+        if span is not None:
+            updated = blocks.cut(updated, span, newline)
+
+    if updated == text:
         return Outcome(label, ALREADY, f"{label} has nothing of {name}.")
 
-    if span is False:
-        return Outcome(label, MANUAL, f"{label} has a half written zephyr-installer block for {name}. "
-                       "Take it out by hand.")
-
-    newline = line_ending(text)
-    start, end = span
-
-    # The block's own line ending, then the one blank line that came with it:
-    # below it in CMakeLists.txt, or above it at the end of a Kconfig file.
-    if text.startswith(newline, end):
-        end += len(newline)
-
-    if text.startswith(newline, end):
-        end += len(newline)
-    elif end == len(text) and text[:start].endswith(newline + newline):
-        start -= len(newline)
-
     saved = backup(path)
-    write(path, text[:start] + text[end:])
+    write(path, updated)
 
     return Outcome(label, CHANGED, f"Removed {name} from {label}.", backup=saved)
 
 
 def uninstall(project_root, name):
-    """Take this library's blocks out of CMakeLists.txt and its Kconfig file. A list of Outcome."""
+    """
+    Take this library's blocks out of CMakeLists.txt, its Kconfig file and
+    sysbuild.conf. A list of Outcome. sysbuild.conf itself stays, even with
+    nothing left in it: the user may have made it.
+    """
     outcomes = []
     cmakelists = Path(project_root) / CMAKELISTS
 
@@ -418,6 +598,11 @@ def uninstall(project_root, name):
 
     if conf is not None:
         outcomes.append(_cut_block(Path(project_root) / conf, conf, name))
+
+    sysbuild = Path(project_root) / SYSBUILD_CONF
+
+    if sysbuild.is_file() and block_span(_text(sysbuild), name):
+        outcomes.append(_cut_block(sysbuild, SYSBUILD_CONF, name))
 
     return outcomes
 

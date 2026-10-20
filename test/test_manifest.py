@@ -174,12 +174,14 @@ def test_what_stm32_installer_needs_is_not_this_ones_business(library):
 def test_cmake_lines_are_read_one_per_line(library):
     loaded = _load(library, zephyr={"cmake": ["zephyr_library_compile_options(-O2)", "  ", " a(b) "]})
 
-    assert loaded.zephyr.cmake == ["zephyr_library_compile_options(-O2)", "a(b)"]
+    # The form from before 2.0.0: one group, in the module, written as it always was.
+    assert [(g.label, g.where, g.lines, g.legacy) for g in loaded.zephyr.cmake] == [
+        ("cmake", "module", ["zephyr_library_compile_options(-O2)", "a(b)"], True)]
 
 
 @pytest.mark.parametrize("cmake, words", [
-    ("zephyr_library_compile_options(-O2)", "list of lines"),
-    ([3], "list of lines"),
+    ("zephyr_library_compile_options(-O2)", "a list of groups"),
+    ([3], "mixes lines and groups"),
     (["a()\nb()"], "runs onto another"),
 ])
 def test_cmake_lines_written_wrong_are_refused(library, cmake, words):

@@ -117,8 +117,9 @@ jobs:
           python -m pip install --no-index dist/*.whl
           cp -r test/e2e/app "$ZP/app"
           cd "$ZP/app"
-          zephyr-installer "$GITHUB_WORKSPACE/test/e2e/demo" < /dev/null
-          cat CMakeLists.txt prj.conf modules/demo/zephyr/CMakeLists.txt modules/demo/zephyr/Kconfig
+          zephyr-installer "$GITHUB_WORKSPACE/test/e2e/demo" "$GITHUB_WORKSPACE/test/e2e/extra" < /dev/null
+          cat CMakeLists.txt prj.conf sysbuild.conf VERSION extra.conf
+          cat modules/demo/zephyr/CMakeLists.txt modules/demo/zephyr/Kconfig modules/extra/zephyr/CMakeLists.txt
 
       # 52 is the library's answer with the value prj.conf sets, 50, not its
       # default of 40, so this also shows the user's setting won.
@@ -132,3 +133,15 @@ jobs:
           west build -b native_sim/native/64 -d build app
           build/zephyr/zephyr.exe --stop_at=1 | tee run.txt
           grep -q "demo says 52" run.txt
+          grep -q "extra says 7, version 3.1.4" run.txt
+
+      # Out again: every block of extra's goes, in CMakeLists.txt, prj.conf
+      # and sysbuild.conf, and the files it made once stay, the user's now.
+      - name: Take extra out
+        working-directory: ${{ env.ZP }}/app
+        run: |
+          zephyr-installer --uninstall extra < /dev/null
+          if grep -q "zephyr-installer: extra" CMakeLists.txt prj.conf sysbuild.conf; then exit 1; fi
+          test -f VERSION
+          test -f extra.conf
+          test ! -e modules/extra/src/extra.c
