@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .core import blocks, usercode
 from .core.files import backup
+from .core.manifest import LIBRARY
 from .core.target import ALREADY, CHANGED, MANUAL, Outcome
 
 NAME = "Zephyr module"
@@ -140,10 +141,16 @@ def cmakelists(library):
             lines.extend(f"  {line}" for line in group.lines)
             continue
 
+        # {library} in a 2.1.0 manifest's lines is the module's own folder.
+        written = group.lines
+
+        if getattr(library, "rooted", False):
+            written = [line.replace(LIBRARY, "${ZEPHYR_CURRENT_MODULE_DIR}") for line in written]
+
         found = blocks.Marker("zephyr-installer", library.name, group.label)
         lines.append(f"  {found.open}")
         lines.append(f"  # From {library.name}'s installer.yml, and written again on every install.")
-        lines.extend(f"  {line}" for line in group.lines)
+        lines.extend(f"  {line}" for line in written)
         lines.append(f"  {found.close}")
 
     # The user's own lines, which every install carries over. Empty to start
@@ -204,6 +211,27 @@ def kconfig(library):
 
             if setting.help:
                 lines.extend(_help(setting.help))
+
+        lines.append("")
+        lines.append(f"endif # {part.symbol}")
+
+    # The library's settings of other symbols, from zephyr.defaults. Defaults,
+    # not assignments: they hold only while the library is on, and a line of
+    # the application's own Kconfig files that sets the same symbol wins. This
+    # file is read before Zephyr's subsystems, so they come before the
+    # subsystems' own defaults, and win over those.
+    defaults = getattr(part, "defaults", [])
+
+    if defaults:
+        lines.append("")
+        lines.append(f"# {library.name}'s settings of other symbols, from zephyr.defaults in its installer.yml.")
+        lines.append(f"# They hold while {part.symbol} is on. A line in prj.conf that sets one wins.")
+        lines.append(f"if {part.symbol}")
+
+        for default in defaults:
+            lines.append("")
+            lines.append(f"configdefault {default.symbol}")
+            lines.append(f"\tdefault {default.value}")
 
         lines.append("")
         lines.append(f"endif # {part.symbol}")

@@ -79,12 +79,12 @@ app/
   CMakeLists.txt         one block added, above find_package(Zephyr)
   prj.conf               one block added, CONFIG_EXAMPLE=y and what it needs
   modules/example/
-    example.h            the library's files, as its installer.yml lists them
-    example.c
+    src/example.h        the library's files, at the paths they have in its repository
+    src/example.c
     zephyr/
       module.yml         written by the installer: the library as a Zephyr module
       CMakeLists.txt     its files, built when CONFIG_EXAMPLE is set
-      Kconfig            CONFIG_EXAMPLE and the library's settings
+      Kconfig            CONFIG_EXAMPLE, the library's settings, and its defaults for others
 ```
 
 The block in your `CMakeLists.txt` adds the library's folder to `ZEPHYR_EXTRA_MODULES`. That is how Zephyr is told about a module outside the west workspace, and it has to come before `find_package(Zephyr)`, which is when Zephyr looks:
@@ -133,14 +133,16 @@ Change your line, or delete it and install again, and the block sets it.
 A library can need more than these two blocks, and then it says so in its `installer.yml`:
 
 - **Sysbuild settings**, such as MCUboot switched on, go into a block of their own in `sysbuild.conf`, made when the application has none, with the same rules as the block in `prj.conf`. A library without them never touches `sysbuild.conf`.
-- **Lines of CMake** it needs in your `CMakeLists.txt` go above `find_package(Zephyr)` or at the end of the file, wherever the library says, each group between two lines that name it:
+- **Lines of CMake** it needs in your `CMakeLists.txt` go above `find_package(Zephyr)` or at the end of the file, wherever the library says, each place between two lines that name it:
 
 ```cmake
-# >>> zephyr-installer: example/conf >>>
+# >>> zephyr-installer: example/before-zephyr >>>
 # From example's installer.yml, and written again on every install.
 list(APPEND EXTRA_CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/example.conf")
-# <<< zephyr-installer: example/conf <<<
+# <<< zephyr-installer: example/before-zephyr <<<
 ```
+
+- **Defaults for other symbols**, such as Bluetooth switched on, go into the library's own Kconfig rather than your `prj.conf`: they hold while the library is on, and a line of yours that sets the same symbol wins.
 
 Every block is written again on every install, so put your own lines outside them. An edit made inside one is noticed on the next install, and the file as it was is in the `.bak`.
 
@@ -177,7 +179,7 @@ A library can bring files that belong to your application rather than to the lib
 
 ```
 Files
-  written modules/example/example.h
+  written modules/example/src/example.h
   created VERSION  yours from now on
   created socs/nrf54l15_cpuapp.overlay  yours from now on
 ```
@@ -191,7 +193,7 @@ A library can need something made that no file can carry, such as the key its im
 ```
 Run
   signing-key  Make MCUboot's signing key, sign_key.pem
-               python scripts/make_key.py sign_key.pem
+               python tools/make_key.py sign_key.pem
                Run it? [Y/n]:
 ```
 
@@ -222,8 +224,8 @@ Requirements
 Folder to install example into [modules/example]:
 
 Files
-  written modules/example/example.h
-  written modules/example/example.c
+  written modules/example/src/example.h
+  written modules/example/src/example.c
 
 Project
   updated Zephyr module  Wrote example_lib: zephyr/module.yml, zephyr/CMakeLists.txt, zephyr/Kconfig.
@@ -373,7 +375,7 @@ A repository of an organisation can need one more step: an organisation that ask
 
 Put an `installer.yml` at the root of the repository. Any library can have one, whoever wrote it, and the one file serves zephyr-installer and the other installers alike: each reads its own keys and leaves the others' alone.
 
-Every key zephyr-installer reads is below, each with what it does. Only `name` and `files` are required; leave out what your library does not need. For a working one to copy, see [zephyr-installer-example](https://github.com/nimaltd/zephyr-installer-example).
+Every key zephyr-installer reads is below, each with what it does, as a manifest asking for 2.1.0 writes it. Only `name` and its `headers` or `sources` are required; leave out what your library does not need. For a working one to copy, see [zephyr-installer-example](https://github.com/nimaltd/zephyr-installer-example). What changed in 2.1.0, and how a manifest from before reads, is under [Paths, from 2.1.0](#paths-from-210).
 
 ```yaml
 name: example                      # the library's name, its folder and its Kconfig symbol
@@ -389,7 +391,7 @@ category: storage                  # sensor, storage, display, communication, wi
 provides: []                       # what it gives other libraries: [rtos] for an RTOS
 
 requires:
-  zephyr_installer: 2.0.0          # the oldest zephyr-installer that reads this file
+  zephyr_installer: 2.1.0          # the oldest zephyr-installer that reads this file
   libraries:                       # other libraries, installed first when missing
     - osal >= 1.0.0                # no owner means nimaltd; >= the oldest that will do
     - owner/lib                    # anyone else's, as owner/name
@@ -406,55 +408,59 @@ requires:
       note: 400 kHz                # how to set it up
 
 install:
-  layout: mirror                   # mirror keeps the repository's folders,
-                                   # flat (the default) puts every file at the top
   include_dirs: [src]              # include folders, only when the guess is wrong
   defines:                         # given to the whole build, NAME or NAME=value
     - EXAMPLE_FAST
 
-files:
-  headers:                         # .h files; the first is the one to #include
-    - src/example.h
-    - src/port/*.h                 # a wildcard, matched the way a shell would
-  sources:                         # .c files, built when the library is switched on
-    - src/example.c
-    - from: src/port/spi.c         # a file that goes somewhere of its own,
-      to: port/spi.c               # whatever the layout says
+headers:                           # .h files; the first is the one to #include
+  - src/example.h                  # every file keeps its path: modules/example/src/example.h
+  - src/port/*.h                   # a wildcard, matched the way a shell would:
+                                   # * inside one folder, ** across any number of them
+sources:                           # .c files, built when the library is switched on
+  - src/example.c
+  - from: src/port/spi.c           # a file that goes somewhere of its own,
+    to: port/spi.c                 # in the library's folder
 
 options:                           # parts the user chooses at install
   littlefs:                        # the name typed after --with
     description: LittleFS file system on the flash  # the question asked
     libraries:                     # libraries this part needs, installed first
       - littlefs >= 2.11.0
-    files:                         # its files, written like files above
-      sources:
-        - src/example_lfs.c
+    sources:                       # its files, written like headers and sources above
+      - src/example_lfs.c
 
 extras:                            # copied as they are, never compiled
   - LICENSE.md                     # LICENSE.md and NOTICE are the default,
   - NOTICE                         # so leave this out if that is all
-  - README.md
+  - README.md                      # in the library's folder: modules/example/README.md
+  - root: tools                    # 2.1.0: tools/ into the application's folder instead,
+                                   # as the library's own, written again on every install
 
 once:                              # the application's own files: made when missing,
                                    # then the user's, never replaced or removed
-  - from: project/VERSION          # the file in the repository, to the application's folder
-  - from: boards/nrf54l15.overlay  # to: its place in the application, when not its name
+  - VERSION                        # 2.1.0: a path alone lands at that path: VERSION
+  - from: boards/nrf54l15.overlay  # to: another place in the application
     to: socs/nrf54l15_cpuapp.overlay
 
 run:                               # steps run once the files are in, each asked about first
   - label: signing-key             # the name typed after --run
     description: Make the signing key, sign_key.pem  # shown with the question
-    script: scripts/make_key.py    # Python, run with the installer's own Python,
+    script: tools/make_key.py      # Python, run with the installer's own Python, from the
+                                   # application's folder, or {library}/... in the library's
     args: [sign_key.pem]           # or command: [program, arguments], with no shell
     unless: sign_key.pem           # skipped when this file is in the application already
 
 zephyr:                            # read by zephyr-installer only
   kconfig: EXAMPLE                 # the library's symbol; the name in capitals when left out
-  cmake:                           # groups of CMake lines, each in a place of its own
-    - label: libs                  # names the group, in the lines around it
-      where: module                # module (the default), before-zephyr or after-zephyr
-      lines:
-        - zephyr_library_link_libraries(mbedTLS)
+  defaults:                        # 2.1.0: settings of other symbols, held while the library
+    - BT                           # is on; prj.conf can change any. A symbol alone is y,
+    - BT_L2CAP_TX_MTU=498          # or SYMBOL=value, written as under requires.kconfig
+  cmake:                           # lines of CMake, under the place they go:
+    module:                        # the module's CMakeLists.txt, in if(CONFIG_EXAMPLE)
+      - zephyr_library_link_libraries(mbedTLS)
+    before-zephyr:                 # the application's, above find_package(Zephyr)
+      - list(APPEND EXTRA_DTC_OVERLAY_FILE "{library}/dts/example.overlay")
+    after-zephyr: []               # the application's, at its end
   sysbuild:                        # sysbuild settings, a block in sysbuild.conf
     - BOOTLOADER_MCUBOOT           # a symbol alone is set to y, without SB_CONFIG_
     - BOOT_SIGNATURE_KEY_FILE="${APP_DIR}/sign_key.pem"  # or SYMBOL=value
@@ -476,40 +482,119 @@ Leave `version` out. The installer reads the version from the `@version` tag in 
 
 A library that uses anything 2.0.0 brings says `requires.zephyr_installer: 2.0.0`: `once` files in the application's folder, `run`, groups under `zephyr.cmake`, `zephyr.sysbuild`, or a library it needs given with an `@` or a `manifest`. The version also decides where `once` files go. A manifest asking for 2.0.0 or newer puts them in the application's folder, and one asking for less keeps the meaning it was written for, the library's own folder, so a release tagged before 2.0.0 still installs and builds as it did.
 
+### Paths, from 2.1.0
+
+A manifest asking for `requires.zephyr_installer: 2.1.0` has one rule for every path that names a place in the application: it starts at the application's folder, the one holding `CMakeLists.txt`. `{library}` at its start names the library's own folder instead, wherever `--dir` put it. A path that names a file of the library, under `headers`, `sources`, `extras` or `once`, or as a `from`, is a path in the repository, as always.
+
+And every file is copied to the path it has, unchanged, unless a `to` says otherwise, so a path alone is all an entry needs. `src/example.c` lands at `modules/example/src/example.c`, so `install.layout` is gone: `flat` is refused, `mirror` says nothing new. A `once` file lands at its own path in the application: `- sysbuild/mcuboot.conf` at `sysbuild/mcuboot.conf`, where before 2.1.0 it was written `- from: sysbuild/mcuboot.conf` and took only its name. And `headers` and `sources` need no `files` around them; `files` still reads, but not both at once.
+
+A `to` gives a file another place, where its list puts files. Under `headers`, `sources` and `extras` that is the library's folder, so `- from: src/example.h, to: example.h` lands at `modules/example/example.h`, and the include path follows it. Under `once` it is the application's folder, where every `once` file lands. A `root` puts an extra in the application's folder instead of the library's: `- root: tools` takes the library's `tools/` to the application's `tools/`. Code has no `root`, since it is built in the library's folder, and a `once` file needs none. Wherever a `from` would be the same path as its `to` or `root`, leave it out: `- root: tools` is `- from: tools, root: tools`.
+
+And `zephyr.cmake` gives its lines under the places they go, with no `label`, `where` or `lines`: see [More CMake for a library](#more-cmake-for-a-library).
+
+| Key | Starts at |
+|---|---|
+| `headers`, `sources`, `extras`, `once`, `from` | the library's repository |
+| `to` under `headers`, `sources` and `extras` | the library's folder |
+| `once.to`, `extras.root` | the application's folder |
+| `run.script`, `run.unless` | the application's folder, or the library's with `{library}/` |
+| `{library}` in `run.args` and `run.command` | the library's folder, as the step names it from the application's |
+| `{library}` in `zephyr.cmake` lines | `${CMAKE_CURRENT_SOURCE_DIR}/<the library's folder>` in the application's `CMakeLists.txt`, `${ZEPHYR_CURRENT_MODULE_DIR}` in the module's |
+
+An extra with a `root` lands in the application's folder, as the library's own. A file lands at `root` itself, the files of a folder keep their path below it, and those a wildcard matches keep their names under it; an extra's `to` places them the same way in the library's folder. It is written again on every install, as every extra is, a file of it the new version no longer ships is removed, and an uninstall takes it out. A file already there that the installer did not put there is yours, and is never written over: the install stops and says so.
+
+A wildcard matches the whole path, the way a shell does, and the same whether the library comes from GitHub or a folder: `*` and `?` stay inside one folder, `**` crosses any number of them, none included, and `[ab]` is one of a set. So `*.c` is the `.c` files at the top, `src/*.c` those in `src`, and `src/**/*.c` every one below `src`, however deep. Two files of the code that would land in one place, such as two `util.c` that `flat` put side by side, are refused when the manifest is read, where the second used to replace the first without a word.
+
+```yaml
+extras:
+  - root: tools                    # tools/keygen.py and tools/keygen.md, beside CMakeLists.txt
+run:
+  - label: signing-key
+    script: tools/keygen.py        # the application's tools/keygen.py
+    unless: sign_key.pem
+zephyr:
+  cmake:
+    before-zephyr:
+      - list(APPEND EXTRA_DTC_OVERLAY_FILE "{library}/dts/example.overlay")
+```
+
+A step's script has to be one the install puts in place, an extra with a `root` or a `once` file, or with `{library}`, a file of the library's folder. Anything else is refused when the manifest is read, since it would not be there to run. A manifest asking for less than 2.1.0 keeps the meaning it was written for: its script is found in the library as it was fetched, and `{library}` is left as it is written.
+
+### Settings of other symbols, from 2.1.0
+
+A library that needs Bluetooth, MCUmgr or anything else of Zephyr switched on, or set to a value of its own, lists those settings under `zephyr.defaults`, written as under `requires.kconfig`: a symbol alone is set to `y`, or `SYMBOL=value`:
+
+```yaml
+requires:
+  zephyr_installer: 2.1.0
+zephyr:
+  kconfig: GCORE
+  defaults:
+    - BT
+    - BT_PERIPHERAL
+    - BT_L2CAP_TX_MTU=498
+    - BT_DEVICE_NAME="gcore"
+    - BT_CTLR_LE_PING=n
+```
+
+The installer writes each into the library's Kconfig as a `configdefault`, inside `if GCORE`, and the application's `prj.conf` gets only `CONFIG_GCORE=y`:
+
+```
+if GCORE
+
+configdefault BT
+	default y
+
+configdefault BT_L2CAP_TX_MTU
+	default 498
+...
+endif # GCORE
+```
+
+So the settings hold while the library is switched on, and only then. A line of the application's own that sets one of them wins: `CONFIG_BT_L2CAP_TX_MTU=247` in `prj.conf` is the value used, and the install says so. A setting whose dependencies are not met stays off, without a warning. The library's Kconfig is read before Zephyr's subsystems, so its defaults come before theirs, and win over them; only a board's or a SoC's `Kconfig.defconfig`, read earlier still, can come before it.
+
+A value is `y`, `n`, a number, `0x` and a hex number, or `"text"` with no quote or backslash in it. A symbol given twice, one also under `requires.kconfig`, or the library's own switch, is refused when the manifest is read. A symbol this Zephyr does not define stops the build, as it would in a `prj.conf`. A choice, such as which of several backends is used, cannot be set this way: it goes under `requires.kconfig`, into the application's Kconfig file.
+
+`requires.kconfig` and `zephyr.defaults` differ in where the line goes. `requires.kconfig` writes it into the application's Kconfig file, for the user to see and keep; `zephyr.defaults` keeps it in the library, as a default. A Kconfig fragment given with `EXTRA_CONF_FILE` would be neither: it is read after `prj.conf`, so it would win over the application's own lines, and it would hold with the library switched off.
+
 ### More CMake for a library
 
-A library that needs more than its files and its defines, a library of Zephyr's linked in, an option for its compiler, or a line in the application's own `CMakeLists.txt`, lists the lines under `zephyr.cmake`, in groups. Each group has a label, a place and its lines:
+A library that needs more than its files and its defines, a library of Zephyr's linked in, an option for its compiler, or a line in the application's own `CMakeLists.txt`, lists the lines under `zephyr.cmake`, under the place each goes:
 
 ```yaml
 zephyr:
   cmake:
-    - label: libs                  # where: module, the default
-      lines:
-        - zephyr_library_link_libraries(mbedTLS)
-        - zephyr_library_compile_options(-O2)
-    - label: conf
-      where: before-zephyr
-      lines:
-        - list(APPEND EXTRA_CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/example.conf")
-    - label: report
-      where: after-zephyr
-      lines:
-        - 'message(STATUS "example: built for ${BOARD}")'
+    module:
+      - zephyr_library_link_libraries(mbedTLS)
+      - zephyr_library_compile_options(-O2)
+    before-zephyr:
+      - list(APPEND EXTRA_DTC_OVERLAY_FILE "{library}/dts/example.overlay")
+    after-zephyr:
+      - 'message(STATUS "example: built for ${BOARD}")'
 ```
 
-| `where` | Written into | For |
+| Place | Written into | For |
 |---|---|---|
-| `module`, the default | the module's `zephyr/CMakeLists.txt`, inside `if(CONFIG_EXAMPLE)`, after the library's files | `zephyr_library_...` calls on the library itself, counted only while it is switched on |
+| `module` | the module's `zephyr/CMakeLists.txt`, inside `if(CONFIG_EXAMPLE)`, after the library's files | `zephyr_library_...` calls on the library itself, counted only while it is switched on |
 | `before-zephyr` | the application's `CMakeLists.txt`, above `find_package(Zephyr)`, below the library's `ZEPHYR_EXTRA_MODULES` block | what Zephyr reads as it starts: `EXTRA_CONF_FILE`, `EXTRA_DTC_OVERLAY_FILE`, `SNIPPET`. No `CONFIG_` value exists yet |
 | `after-zephyr` | the application's `CMakeLists.txt`, at its end | what needs the application's own targets, such as `app` |
 
-Each group is written between two lines that name it, `# >>> zephyr-installer: example/conf >>>` and its pair, and groups in one place keep the manifest's order. Every install writes them again: a group whose lines changed is updated, one whose `where` changed is moved, and one the manifest no longer has is taken out. A line keeps the spaces it starts with, so the body of an `if()` can be indented.
+The lines of each place are written as one block, between two lines that name the library and the place, `# >>> zephyr-installer: example/before-zephyr >>>` and its pair, in the manifest's order:
 
-The label is lower case letters, digits, `_` and `-`, starting with a letter, and two groups of one library, its options' groups counted, never share one. An option brings groups of its own under `options.<name>.zephyr.cmake`, written while it is chosen and taken out by the update that turns it off. A line holding a colon, as `message()` often does, goes in quotes, or YAML reads it as a mapping.
+```cmake
+# >>> zephyr-installer: example/before-zephyr >>>
+# From example's installer.yml, and written again on every install.
+list(APPEND EXTRA_DTC_OVERLAY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/modules/example/dts/example.overlay")
+# <<< zephyr-installer: example/before-zephyr <<<
+```
+
+Every install writes them again: a place whose lines changed is updated, and one the manifest no longer has is taken out. A line keeps the spaces it starts with, so the body of an `if()` can be indented. `{library}` in a line names the library's folder, as `${CMAKE_CURRENT_SOURCE_DIR}/modules/example` in the application's file and `${ZEPHYR_CURRENT_MODULE_DIR}` in the module's, wherever `--dir` put it; anything else in a line is CMake's own, written as it stands. A line holding a colon, as `message()` often does, goes in quotes, or YAML reads it as a mapping.
+
+An option brings lines of its own under `options.<name>.zephyr.cmake`, the same way, written while it is chosen and taken out by the update that turns it off. Its blocks are named after it and the place, `example/littlefs-module`, so they never meet the library's.
 
 `zephyr_library_...` commands act on the library's own files only. A library of headers alone has no library of its own, so it uses the `zephyr_...` ones, which act on the whole build. The lines run when the user configures the build, the same as a module the library ships itself would, so they are the library's to answer for.
 
-The form from before 2.0.0, a plain list of lines, still installs: it is one group in `module`, written as it always was.
+The forms from before 2.1.0 still install. A list of groups, each with a `label`, a `where`, `module` when left out, and its `lines`, writes each group as a block named after its label, `example/<label>`; a manifest moving to places has its old blocks taken out on the next install, and the new ones written. The form from before 2.0.0, a plain list of lines, is one group in `module`, written as it always was.
 
 The user has a place in the module's file too. Its last lines are a `USER CODE` section, empty to start with, and every install keeps what is written in it, the way a configuration header keeps settings:
 
@@ -552,13 +637,15 @@ A file that belongs to the application rather than to the library goes under `on
 
 ```yaml
 once:
-  - from: project/VERSION              # to: the file's own name, VERSION
-  - from: project/CHANGELOG.md
+  - VERSION                            # lands at VERSION, its own path
+  - sysbuild/mcuboot.conf              # lands at sysbuild/mcuboot.conf
+  - from: templates/CHANGELOG.md
+    to: CHANGELOG.md                   # a place of its own
   - from: boards/nrf54l15.overlay
     to: socs/nrf54l15_cpuapp.overlay   # a folder inside the application is fine
 ```
 
-`from` is a file of the library's repository, and `to` its place from the application's folder, its own name when left out. Zephyr applies an overlay in the application's `socs/` folder to every board with that chip, so a library can bring one per chip this way.
+From 2.1.0 a path alone is a file of the library's repository, landing at the same path in the application, so a repository that keeps these files where the application keeps them needs nothing more. A file that goes somewhere else names it with `from`, the file in the repository, and `to`, its place from the application's folder. Before 2.1.0 each entry is a mapping with a `from`, and a `to` left out meant the file's name alone, at the top. A `once` file has no `root`: it always lands in the application's folder. Zephyr applies an overlay in the application's `socs/` folder to every board with that chip, so a library can bring one per chip this way.
 
 Each is checked before anything is written. `to` stays inside the application, names none of the files the installer manages, `CMakeLists.txt`, the Kconfig file with the library's block, the record, and `sysbuild.conf` when the library has sysbuild settings, and does not point into the library's own folder, which every install replaces. Two entries with one `to` are refused. And `from`, like every file a manifest names, stays inside the library: no `..`, no absolute path, no link leading out of it.
 
@@ -569,17 +656,19 @@ What the user changes in their settings belongs in USER CODE sections of the lib
 Something no file can carry, such as a signing key made fresh for each product, is made by a step under `run`. It runs once the library's files are in, in the application's folder:
 
 ```yaml
+extras:
+  - root: tools                        # tools/make_key.py, beside CMakeLists.txt
 run:
   - label: signing-key
     description: Make MCUboot's signing key, sign_key.pem
-    script: scripts/make_key.py
+    script: tools/make_key.py          # the application's tools/make_key.py
     args: [sign_key.pem]
     unless: sign_key.pem
 ```
 
 - `label` names the step, typed after `--run`, in lower case letters, digits, `_` and `-`.
 - `description` is shown with the question.
-- `script` is a Python file of the library, run with the installer's own Python, so it works on every computer the installer does. Or `command`, a program and its arguments as a list, `[imgtool, keygen, -k, sign_key.pem, -t, ecdsa-p256]`, run as it is, with no shell. One of the two, never both.
+- `script` is a Python file, run with the installer's own Python, so it works on every computer the installer does. From 2.1.0 it is a path from the application's folder, where an extra with a `root` or a `once` file put it, or `{library}/...` in the library's folder, see [Paths, from 2.1.0](#paths-from-210); before, it is a file of the library's repository. Or `command`, a program and its arguments as a list, `[imgtool, keygen, -k, sign_key.pem, -t, ecdsa-p256]`, run as it is, with no shell. One of the two, never both.
 - `args` are added after either.
 - `unless` names a file the step makes, from the application's folder. When it is there, the step is skipped without a question.
 
@@ -624,7 +713,7 @@ Each setting is checked at install, since all of it is written into a Kconfig fi
 
 ### A library with its own module
 
-A library that ships a `zephyr/module.yml` of its own, listed under `extras` or `files` so it is installed, knows its build better than the installer does. Its module is used as it is: nothing is written into its `zephyr` folder, and only the two blocks in the application are added. `zephyr.kconfig` then names the symbol its Kconfig defines, for the block in `prj.conf` to set.
+A library that ships a `zephyr/module.yml` of its own, listed under `extras`, `headers` or `sources` so it is installed, knows its build better than the installer does. Its module is used as it is: nothing is written into its `zephyr` folder, and only the two blocks in the application are added. `zephyr.kconfig` then names the symbol its Kconfig defines, for the block in `prj.conf` to set.
 
 ---
 

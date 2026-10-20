@@ -56,7 +56,7 @@ def library(tmp_path):
     """
 
     def build(name="demo", headers=("src/demo.h",), sources=("src/demo.c",), zephyr=None,
-              requires=None, defines=None, layout="flat", extra=None, files=None, root=None):
+              requires=None, defines=None, layout=None, extra=None, files=None, root=None):
         root = Path(root) if root else tmp_path / name
         root.mkdir(parents=True, exist_ok=True)
 
@@ -73,12 +73,16 @@ def library(tmp_path):
             "name": name,
             "description": "A library for the tests",
             "repository": f"https://github.com/someone/{name}",
-            "install": {"layout": layout},
             "files": {"headers": list(headers), "sources": list(sources)},
         }
 
+        # Only when a test asks: a manifest asking for 2.1.0 has no layout, and
+        # flat is the default before.
+        if layout:
+            data.setdefault("install", {})["layout"] = layout
+
         if defines:
-            data["install"]["defines"] = list(defines)
+            data.setdefault("install", {})["defines"] = list(defines)
 
         if requires is not None:
             data["requires"] = requires

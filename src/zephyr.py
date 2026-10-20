@@ -121,6 +121,35 @@ class SysbuildSetting:
         return f"SysbuildSetting({self.line})"
 
 
+class Default:
+    """
+    A setting the library gives another symbol while its own is on, from
+    zephyr.defaults: BT, which is set to y, or BT_L2CAP_TX_MTU=498. Written into
+    the library's Kconfig as a configdefault, so it holds only while the
+    library is switched on, and a line of the application's own Kconfig files
+    that sets the same symbol wins.
+    """
+
+    def __init__(self, text):
+        name, _, value = str(text).partition("=")
+        self.symbol = _symbol(name, "zephyr.defaults")
+        self.value = value.strip() or "y"
+
+        if not VALUE.match(self.value):
+            raise ManifestError(
+                f"zephyr.defaults has {text!r}. Give a symbol, which is set to y, or "
+                'SYMBOL=value, with y, n, a number, 0x and a hex number, or "text".'
+            )
+
+    @property
+    def line(self):
+        """The setting as prj.conf would write it."""
+        return f"CONFIG_{self.symbol}={self.value}"
+
+    def __repr__(self):
+        return f"Default({self.line})"
+
+
 class Peripheral:
     """Hardware the library uses, for the user to give it in the devicetree."""
 
@@ -261,12 +290,13 @@ class ZephyrPart:
         if twice:
             raise ManifestError(f"zephyr.settings has {', '.join(twice)} more than once.")
 
-        # Lines of CMake the library needs beyond its files, in labelled groups,
-        # each written where its where says: into the module's CMakeLists.txt,
-        # or the application's, above find_package(Zephyr) or at its end. A
-        # plain list of lines is the form from before 2.0.0: one group, in the
-        # module, written as it always was.
-        self.cmake = blocks.groups(data.get("cmake"), "zephyr.cmake", PLACES, MODULE)
+        # Lines of CMake the library needs beyond its files, by the place they
+        # go, from 2.1.0: module, the module's CMakeLists.txt, or before-zephyr
+        # and after-zephyr, the application's, above find_package(Zephyr) or at
+        # its end. Before, labelled groups each with a where; and a plain list
+        # of lines, the form from before 2.0.0: one group, in the module.
+        self.cmake = blocks.groups(data.get("cmake"), "zephyr.cmake", PLACES, MODULE,
+                                   rooted=getattr(library, "rooted", False))
 
         # Settings of sysbuild, for the application's sysbuild.conf.
         sysbuild = data.get("sysbuild") or []
@@ -280,6 +310,45 @@ class ZephyrPart:
 
         if twice:
             raise ManifestError(f"zephyr.sysbuild has {', '.join(twice)} more than once.")
+
+        # Settings the library gives other symbols while its own is on, written
+        # as requires.kconfig is. Each becomes a configdefault in its Kconfig, so
+        # the application's prj.conf holds only the library's switch, and any
+        # line of its own there wins.
+        defaults = data.get("defaults") or []
+
+        if not isinstance(defaults, list):
+            raise ManifestError("zephyr.defaults is a list of settings, such as [BT, BT_L2CAP_TX_MTU=498].")
+
+        if defaults and not getattr(library, "rooted", False):
+            raise ManifestError(
+                "zephyr.defaults is new in 2.1.0: ask for it under requires, as zephyr_installer: 2.1.0."
+            )
+
+        self.defaults = [Default(entry) for entry in defaults]
+        names = [default.symbol for default in self.defaults]
+        twice = sorted({name for name in names if names.count(name) > 1})
+
+        if twice:
+            raise ManifestError(f"zephyr.defaults has {', '.join(twice)} more than once.")
+
+        if self.symbol in names:
+            raise ManifestError(
+                f"zephyr.defaults has {self.symbol}, the library's own switch. prj.conf switches it, "
+                "and the defaults hold while it is on."
+            )
+
+        # A symbol set in prj.conf by requires.kconfig is an assignment, and a
+        # default for it would never be used.
+        required = {requirement.symbol for requirement in getattr(library.requires, "kconfig", [])}
+        both = sorted(required & set(names))
+
+        if both:
+            raise ManifestError(
+                f"{', '.join(both)} {'is' if len(both) == 1 else 'are'} in both requires.kconfig and "
+                "zephyr.defaults. Give each in one of them: requires.kconfig sets it in prj.conf, "
+                "zephyr.defaults gives it a default while the library is on."
+            )
 
 
 class Zephyr(Target):
@@ -401,7 +470,8 @@ class Zephyr(Target):
             raise ManifestError(f"options.{option.name}.zephyr should hold cmake.")
 
         option.zephyr_cmake = blocks.groups((part or {}).get("cmake"), f"options.{option.name}.zephyr.cmake",
-                                            PLACES, MODULE, legacy=False)
+                                            PLACES, MODULE, legacy=False, prefix=option.name,
+                                            rooted=getattr(option, "rooted", False))
 
     def read_requirements(self, requirements, data):
         """The Zephyr part of requires: Kconfig symbols, and hardware."""
@@ -470,6 +540,22 @@ class Zephyr(Target):
                     WARN, f"{have[1]} sets CONFIG_{symbol}={have[0]}, and {library.name} needs {value}. "
                     "The block has it commented out",
                     "Your line is the one used. Change it if the library is to work.",
+                ))
+
+        # The library's zephyr.defaults, which hold while it is on. A line of the
+        # application's that sets the same symbol wins, and says so.
+        part = library.zephyr
+
+        for default in part.defaults:
+            have = assigned.get(default.symbol)
+
+            if have is None or have[0] == default.value:
+                findings.append(Finding(OK, f"{default.line} by default, while CONFIG_{part.symbol} is on"))
+            else:
+                findings.append(Finding(
+                    INFO, f"{have[1]} sets CONFIG_{default.symbol}={have[0]}, in place of "
+                    f"{library.name}'s default {default.value}",
+                    "Your line is the one used.",
                 ))
 
         for peripheral in library.requires.peripherals:

@@ -32,6 +32,7 @@ from pathlib import Path
 from .core import blocks
 from .core.files import backup
 from .core.installer import installed_libraries
+from .core.manifest import LIBRARY
 from .core.target import ALREADY, CHANGED, MANUAL, Outcome
 from .module import cmake_quote, groups
 
@@ -289,11 +290,12 @@ def integrate_cmake(project_root, library, destination):
         first = FIND_ZEPHYR.search(rest).start()
         updated = rest[:first] + block + newline + newline + rest[first:]
 
-    updated = _with_groups(updated, library, ours, newline)
+    folder = library_folder(destination, project_root)
+    updated = _with_groups(updated, library, ours, newline, folder)
 
     if updated is False:
         return _half_written(CMAKELISTS, name, "\n".join(
-            line for group in ours for line in group_lines(library, group)))
+            line for group in ours for line in group_lines(library, group, folder)))
 
     outcome = _write_block(path, CMAKELISTS, text, updated, name)
     markers = [marker(name)] + [marker(name, group.label) for group in ours]
@@ -303,15 +305,34 @@ def integrate_cmake(project_root, library, destination):
     return outcome
 
 
-def group_lines(library, group):
-    """A group's block in the application's CMakeLists.txt, as lines."""
+def library_folder(destination, project_root):
+    """
+    The library's folder as a line of the application's CMakeLists.txt names
+    it, for {library} in a 2.1.0 manifest's groups: from the application's
+    folder, or in full when it is somewhere else. Unquoted, since the line has
+    its own quotes around it.
+    """
+    folder = relative(destination, project_root)
+
+    if folder is None:
+        return Path(destination).resolve().as_posix()
+
+    return "${CMAKE_CURRENT_SOURCE_DIR}" if folder in (".", "") else "${CMAKE_CURRENT_SOURCE_DIR}/" + folder
+
+
+def group_lines(library, group, folder=None):
+    """A group's block in the application's CMakeLists.txt, as lines, {library} standing for folder."""
     name = marker(library.name, group.label)
+    lines = list(group.lines)
+
+    if getattr(library, "rooted", False) and folder is not None:
+        lines = [line.replace(LIBRARY, folder) for line in lines]
 
     return ([name.open, f"# From {library.name}'s installer.yml, and written again on every install."]
-            + list(group.lines) + [name.close])
+            + lines + [name.close])
 
 
-def _with_groups(text, library, ours, newline):
+def _with_groups(text, library, ours, newline, folder=None):
     """
     text with the library's groups for the application each in its place, and
     any group it no longer has taken out. False when one is half written.
@@ -328,7 +349,7 @@ def _with_groups(text, library, ours, newline):
             text = blocks.cut(text, found, newline)
 
     for group in ours:
-        lines = group_lines(library, group)[1:-1]
+        lines = group_lines(library, group, folder)[1:-1]
         anchor = _above_zephyr if group.where == BEFORE_ZEPHYR else None
         text = blocks.place(text, marker(library.name, group.label), lines, newline, anchor)
 
