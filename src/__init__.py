@@ -1,42 +1,18 @@
 """
-Install embedded C libraries into a Zephyr application.
+zephyr-installer is now lib-installer.
 
-Installed with pip, it is the zephyr-installer command. It takes a library from
-GitHub, from a downloaded zip, or from a folder, makes it a Zephyr module of the
-application, and switches it on in prj.conf.
-
-The work that is the same for any project is the shared core, in core/, from
-github.com/nimaltd/core-installer. What a Zephyr application is, is in zephyr.py.
-
-See https://github.com/nimaltd/zephyr-installer
+This last release only says so. lib-installer does what zephyr-installer did, for
+STM32, Zephyr, ESP-IDF, Arduino and PlatformIO alike, with the same commands:
+https://github.com/nimaltd/lib-installer
 """
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 
-# Before anything of the core is used: it asks the target for every answer
-# that depends on the kind of project.
-from .core import target as _target  # noqa: E402
-from .zephyr import Zephyr  # noqa: E402
-
-_target.use(Zephyr(__version__))
-
-from .core.installer import InstallError, Result, install_in_place, install_to  # noqa: E402
-from .core.manifest import Manifest, ManifestError, load  # noqa: E402
-
-__all__ = [
-    "InstallError",
-    "Manifest",
-    "ManifestError",
-    "Result",
-    "install_in_place",
-    "install_to",
-    "load",
-    "main",
-]
+__all__ = ["main"]
 
 
 def main(argv=None):
-    """Run the command line interface. Imported lazily to keep start-up cheap."""
+    """Say where zephyr-installer went. Returns a process exit code."""
     from .cli import main as _main
 
     return _main(argv=argv)

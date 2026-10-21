@@ -8,7 +8,7 @@ name = "zephyr-installer"
 # Read from zephyr_installer.__version__, so the version lives in exactly one
 # place and cannot drift between the package and its metadata.
 dynamic = ["version"]
-description = "Install embedded C libraries into a Zephyr application, as Zephyr modules"
+description = "Now lib-installer: install embedded C libraries into STM32, Zephyr, ESP-IDF, Arduino and PlatformIO projects"
 readme = "README.md"
 requires-python = ">=3.8"
 license = "Apache-2.0"
@@ -35,12 +35,10 @@ Issues = "https://github.com/nimaltd/zephyr-installer/issues"
 [project.scripts]
 zephyr-installer = "zephyr_installer.cli:main"
 
-# The package is the src folder itself, with no folder of its name inside. The
-# core is a git submodule, the whole core-installer repository, and its own
-# tests are no part of the installer, so they are not listed.
+# The package is the src folder itself, with no folder of its name inside.
 [tool.setuptools]
 package-dir = { "zephyr_installer" = "src" }
-packages = ["zephyr_installer", "zephyr_installer.core"]
+packages = ["zephyr_installer"]
 
 [tool.setuptools.dynamic]
 version = { attr = "zephyr_installer.__version__" }
