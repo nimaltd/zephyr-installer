@@ -15,7 +15,7 @@ Every option you used is there: `zephyr-installer owner/example --dir Libs/examp
 
 **A library needs a `libnima.yml`** at the root of its repository, as [libNIMA's format page](https://github.com/nimaltd/libNIMA/blob/main/docs/FORMAT.md) shows. The second tab of libNIMA's window writes one with you.
 
-The last release of zephyr-installer, 3.0.0, installs nothing. 2.1.0 was the last that installed, and its code stays in this repository's history.
+The last release of zephyr-installer, 3.0.1, installs nothing. 2.1.0 was the last that installed, and its code stays in this repository's history.
 
 ---
 
